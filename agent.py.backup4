@@ -19,7 +19,6 @@ class AIAgent:
         self.iteration_count = 0
         self.reasoning_effort = "high"  # Set to high by default
         self.cancel_requested = False  # Flag for cancellation
-        self.max_context_messages = 50  # Keep last 50 messages to prevent context overflow
         
         self.system_prompt = f"""You are an expert AI assistant with access to tools on the user's Windows computer. You are highly intelligent, methodical, and thorough.
 
@@ -129,25 +128,6 @@ Remember: **Quality over speed. Think before you act. Be the expert assistant th
         """Request cancellation of current operation."""
         self.cancel_requested = True
 
-    def _trim_conversation_history(self):
-        """Trim conversation history to prevent context overflow while preserving important context."""
-        if len(self.messages) <= self.max_context_messages:
-            return
-        
-        # Keep system message (first message) and recent messages
-        system_msg = self.messages[0] if self.messages and self.messages[0]["role"] == "system" else None
-        
-        # Keep last N messages (excluding system message)
-        recent_messages = self.messages[-(self.max_context_messages - 1):]
-        
-        # Rebuild messages list
-        self.messages = []
-        if system_msg:
-            self.messages.append(system_msg)
-        self.messages.extend(recent_messages)
-        
-        print(f"[Memory Management] Trimmed conversation to {len(self.messages)} messages")
-
     def set_model(self, model: str):
         self.model = model
 
@@ -183,9 +163,6 @@ Remember: **Quality over speed. Think before you act. Be the expert assistant th
         # Reset cancel flag at start
         self.cancel_requested = False
 
-        # Trim conversation history to prevent context overflow
-        self._trim_conversation_history()
-
         # Add user message
         self.messages.append({"role": "user", "content": user_message})
         
@@ -201,10 +178,6 @@ Remember: **Quality over speed. Think before you act. Be the expert assistant th
             if self.cancel_requested:
                 cancel_msg = "\n\n⏹️ **Operation cancelled by user.**"
                 full_response += cancel_msg
-                
-                # Save cancellation to maintain memory
-                self.messages.append({"role": "assistant", "content": full_response})
-                
                 yield full_response
                 return
 
@@ -244,10 +217,6 @@ Remember: **Quality over speed. Think before you act. Be the expert assistant th
                     if self.cancel_requested:
                         cancel_msg = "\n\n⏹️ **Operation cancelled by user.**"
                         full_response += cancel_msg
-                        
-                        # Save cancellation to maintain memory
-                        self.messages.append({"role": "assistant", "content": full_response})
-                        
                         yield full_response
                         return
 
@@ -311,10 +280,6 @@ Remember: **Quality over speed. Think before you act. Be the expert assistant th
                         if self.cancel_requested:
                             cancel_msg = "\n\n⏹️ **Operation cancelled by user.**"
                             full_response += cancel_msg
-                            
-                            # Save cancellation to maintain memory
-                            self.messages.append({"role": "assistant", "content": full_response})
-                            
                             yield full_response
                             return
 
@@ -345,10 +310,6 @@ Remember: **Quality over speed. Think before you act. Be the expert assistant th
                             full_response = full_response.replace(executing_msg, "")
                             cancel_msg = "\n\n⏹️ **Operation cancelled by user.**"
                             full_response += cancel_msg
-                            
-                            # Save cancellation to maintain memory
-                            self.messages.append({"role": "assistant", "content": full_response})
-                            
                             yield full_response
                             return
 
@@ -396,18 +357,10 @@ Remember: **Quality over speed. Think before you act. Be the expert assistant th
             except Exception as e:
                 error_msg = f"\n\n❌ API Error: {str(e)}"
                 full_response += error_msg
-                
-                # Save error to maintain memory
-                self.messages.append({"role": "assistant", "content": full_response})
-                
                 yield full_response
                 return
 
         # Max iterations reached
-        warning = f"\n\n⚠️ Naabot ang maximum iterations ({MAX_ITERATIONS}). Ang agent ay huminto.\n\n**Note**: Naaalala ko pa rin ang ating conversation! Pwede kang mag-send ng bagong message para mag-continue tayo mula sa naiwan natin."
+        warning = f"\n\n⚠️ Naabot ang maximum iterations ({MAX_ITERATIONS}). Ang agent ay huminto."
         full_response += warning
-        
-        # CRITICAL: Save the final response to maintain memory
-        self.messages.append({"role": "assistant", "content": full_response})
-        
         yield full_response

@@ -139,19 +139,10 @@ def create_app():
         border-color: #007bff !important;
         background-color: rgba(0, 123, 255, 0.05) !important;
     }
-    
-    /* Auto-scroll styles for chatbot */
-    .gradio-chatbot {
-        scroll-behavior: smooth !important;
-    }
-    
-    .gradio-chatbot .message-wrap {
-        scroll-behavior: smooth !important;
-    }
     """
     
     with gr.Blocks(title="🤖 AI Agent - Sandboxed Local Assistant") as app:
-        # Add JavaScript for drag-drop prevention AND auto-scroll
+        # Add JavaScript to prevent browser from opening dragged files
         gr.HTML("""
         <script>
         // Prevent browser from opening files when dragged outside upload area
@@ -169,56 +160,6 @@ def create_app():
             e.preventDefault();
             document.body.classList.remove('dragover');
         }, false);
-        
-        // Auto-scroll to bottom when chatbot content updates
-        function scrollToBottom() {
-            const chatbots = document.querySelectorAll('.gradio-chatbot');
-            chatbots.forEach(chatbot => {
-                const messageWrap = chatbot.querySelector('.message-wrap');
-                if (messageWrap) {
-                    messageWrap.scrollTop = messageWrap.scrollHeight;
-                }
-            });
-        }
-        
-        // Set up MutationObserver to detect chatbot content changes
-        function setupAutoScroll() {
-            const chatbots = document.querySelectorAll('.gradio-chatbot');
-            chatbots.forEach(chatbot => {
-                const messageWrap = chatbot.querySelector('.message-wrap');
-                if (messageWrap && !messageWrap.dataset.observerAttached) {
-                    const observer = new MutationObserver(function(mutations) {
-                        scrollToBottom();
-                    });
-                    
-                    observer.observe(messageWrap, {
-                        childList: true,
-                        subtree: true,
-                        characterData: true
-                    });
-                    
-                    messageWrap.dataset.observerAttached = 'true';
-                }
-            });
-        }
-        
-        // Also scroll periodically during streaming (fallback)
-        setInterval(scrollToBottom, 500);
-        
-        // Initialize auto-scroll when page loads
-        window.addEventListener('load', function() {
-            setTimeout(setupAutoScroll, 1000);
-        });
-        
-        // Re-initialize when DOM changes (for dynamic content)
-        const bodyObserver = new MutationObserver(function() {
-            setupAutoScroll();
-        });
-        
-        bodyObserver.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
         </script>
         """)
         
@@ -388,17 +329,17 @@ def create_app():
         def start_chat(message, history, api_key, model, file_paths, is_running):
             """Start chat with loading indicator."""
             if is_running:
-                return history, "", False, gr.update(visible=False), gr.update(visible=False), "No files uploaded", []
+                return history, "", False, gr.update(visible=False), gr.update(visible=False)
             
             # Show loading state
-            yield history, "", True, gr.update(visible=False, interactive=False), gr.update(visible=True), gr.update(), gr.update()
+            yield history, "", True, gr.update(visible=False, interactive=False), gr.update(visible=True)
             
             # Run chat stream
             for result in chat_stream(message, history, api_key, model, file_paths):
-                yield result[0], "", True, gr.update(visible=False, interactive=False), gr.update(visible=True), gr.update(), gr.update()
+                yield result[0], "", True, gr.update(visible=False, interactive=False), gr.update(visible=True)
             
-            # Reset state after completion - CLEAR uploaded files
-            yield result[0], "", False, gr.update(visible=True, interactive=True), gr.update(visible=False), "No files uploaded", []
+            # Reset state after completion
+            yield result[0], "", False, gr.update(visible=True, interactive=True), gr.update(visible=False)
 
         def stop_chat():
             """Stop the current chat operation."""
@@ -408,13 +349,13 @@ def create_app():
         send_btn.click(
             start_chat,
             inputs=[msg, chatbot, api_key_input, model_input, uploaded_files_state, is_running_state],
-            outputs=[chatbot, msg, is_running_state, send_btn, stop_btn, file_status, uploaded_files_state]
+            outputs=[chatbot, msg, is_running_state, send_btn, stop_btn]
         )
         
         msg.submit(
             start_chat,
             inputs=[msg, chatbot, api_key_input, model_input, uploaded_files_state, is_running_state],
-            outputs=[chatbot, msg, is_running_state, send_btn, stop_btn, file_status, uploaded_files_state]
+            outputs=[chatbot, msg, is_running_state, send_btn, stop_btn]
         )
 
         stop_btn.click(
