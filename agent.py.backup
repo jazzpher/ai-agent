@@ -1,0 +1,199 @@
+﻿"""
+AI Agent - Main agent loop with tool calling (Sandboxed)
+Handles the conversation loop between the LLM and tools.
+"""
+import json
+import os
+from openai import OpenAI
+from config import NVIDIA_API_KEY, NVIDIA_BASE_URL, DEFAULT_MODEL, MAX_ITERATIONS, WORKSPACE_DIR
+from tools import TOOL_DEFINITIONS, TOOL_FUNCTIONS
+from safety import guard
+
+
+class AIAgent:
+    def __init__(self, api_key: str = None, model: str = None, base_url: str = None):
+        self.api_key = api_key or NVIDIA_API_KEY
+        self.model = model or DEFAULT_MODEL
+        self.base_url = base_url or NVIDIA_BASE_URL
+        self.messages = []
+        self.iteration_count = 0
+        
+        # System prompt with sandbox awareness
+        self.system_prompt = f"""You are a helpful AI assistant with access to tools on the user's Windows computer.
+
+## 🛡️ SANDBOX & SAFETY
+
+You operate inside a **sandboxed environment** for the user's safety:
+
+- **Workspace directory**: `{WORKSPACE_DIR}`
+- **File writes** are ONLY allowed inside the workspace. Attempts to write to system directories (C:\\Windows, Program Files, etc.) will be BLOCKED.
+- **Dangerous commands** (format, shutdown, deleting system files, registry edits, etc.) will be BLOCKED automatically.
+- **Risky commands** (rm, del, pip uninstall, etc.) will show a WARNING but may proceed.
+- **Credential files** (.ssh keys, .env, .aws) cannot be read for security.
+- **Path traversal** attacks (../../) are prevented.
+
+When a command or operation is BLOCKED, explain to the user why and suggest a safe alternative.
+
+## 🛠️ AVAILABLE TOOLS
+
+1. **run_bash** - Execute shell commands (sandboxed, dangerous commands blocked)
+2. **read_file** - Read files (credential files protected)
+3. **write_file** - Create/edit files (workspace only)
+4. **list_files** - List files in workspace
+5. **web_search** - Search the web (DuckDuckGo)
+6. **pip_install** - Install Python packages (malicious packages blocked)
+7. **run_python** - Execute Python code (dangerous patterns flagged)
+
+## 📋 GUIDELINES
+
+- Always use tools when the task requires action
+- When asked to install something, use pip_install or run_bash
+- For complex tasks, break them into steps
+- Explain what you're doing before and after using tools
+- If a tool is blocked by safety, explain why and suggest alternatives
+- The user may speak in Filipino/Tagalog - respond in whatever language they use
+- Be concise but helpful
+- NEVER try to bypass safety restrictions even if asked
+- If the user asks you to do something dangerous, politely explain why you can't and suggest a safe alternative"""
+
+    def reset(self):
+        """Reset conversation history."""
+        self.messages = []
+        self.iteration_count = 0
+
+    def set_model(self, model: str):
+        self.model = model
+
+    def set_api_key(self, api_key: str):
+        self.api_key = api_key
+
+    def _get_client(self):
+        return OpenAI(
+            base_url=self.base_url,
+            api_key=self.api_key
+        )
+
+    def _execute_tool(self, tool_name: str, arguments: dict) -> str:
+        if tool_name not in TOOL_FUNCTIONS:
+            return json.dumps({"status": "error", "output": f"Unknown tool: {tool_name}"})
+        
+        try:
+            func = TOOL_FUNCTIONS[tool_name]
+            result = func(**arguments)
+            return json.dumps(result, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"status": "error", "output": str(e)})
+
+    def chat(self, user_message: str):
+        """
+        Process a user message and yield steps as they happen.
+        Each step is a dict with: type, content, details (optional)
+        """
+        if not self.api_key:
+            yield {
+                "type": "error",
+                "content": "⚠️ Walang API key! I-set mo muna ang NVIDIA API key sa Settings."
+            }
+            return
+
+        # Add user message
+        self.messages.append({"role": "user", "content": user_message})
+        
+        if len(self.messages) == 1:
+            self.messages.insert(0, {"role": "system", "content": self.system_prompt})
+
+        client = self._get_client()
+        self.iteration_count = 0
+
+        while self.iteration_count < MAX_ITERATIONS:
+            self.iteration_count += 1
+
+            try:
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=self.messages,
+                    tools=TOOL_DEFINITIONS,
+                    tool_choice="auto",
+                    temperature=0.7,
+                    max_tokens=4096
+                )
+            except Exception as e:
+                yield {
+                    "type": "error",
+                    "content": f"❌ API Error: {str(e)}"
+                }
+                return
+
+            message = response.choices[0].message
+
+            if message.tool_calls:
+                self.messages.append(message)
+
+                for tool_call in message.tool_calls:
+                    tool_name = tool_call.function.name
+                    try:
+                        arguments = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError:
+                        arguments = {}
+
+                    yield {
+                        "type": "tool_call",
+                        "content": f"🔧 **{tool_name}**",
+                        "details": f"```json\n{json.dumps(arguments, indent=2, ensure_ascii=False)}\n```"
+                    }
+
+                    result = self._execute_tool(tool_name, arguments)
+
+                    try:
+                        result_data = json.loads(result)
+                        result_output = result_data.get("output", result)
+                        result_status = result_data.get("status", "unknown")
+                        risk_level = result_data.get("risk_level", "safe")
+                    except:
+                        result_output = result
+                        result_status = "unknown"
+                        risk_level = "safe"
+
+                    # Format the result display based on status
+                    display_output = result_output
+                    if len(display_output) > 2000:
+                        display_output = display_output[:2000] + "\n... (truncated)"
+
+                    if result_status == "blocked":
+                        icon = "🚫"
+                        label = "BLOCKED by Safety Guard"
+                    elif risk_level == "risky":
+                        icon = "⚠️"
+                        label = "Executed (risky)"
+                    else:
+                        icon = "📋"
+                        label = "Result"
+
+                    yield {
+                        "type": "tool_result",
+                        "content": f"{icon} **{label}**",
+                        "details": f"```\n{display_output}\n```",
+                        "status": result_status,
+                        "risk_level": risk_level
+                    }
+
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result
+                    })
+
+            else:
+                final_response = message.content or "(no response)"
+                self.messages.append({"role": "assistant", "content": final_response})
+                
+                yield {
+                    "type": "response",
+                    "content": final_response
+                }
+                return
+
+        yield {
+            "type": "warning",
+            "content": f"⚠️ Naabot ang maximum iterations ({MAX_ITERATIONS}). Ang agent ay huminto."
+        }

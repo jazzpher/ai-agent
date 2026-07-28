@@ -1,0 +1,432 @@
+﻿"""
+Tools for the AI Agent (Sandboxed Version)
+Each tool is protected by safety guardrails.
+"""
+import os
+import subprocess
+import sys
+import json
+import httpx
+from config import WORKSPACE_DIR
+from safety import guard, SafetyViolation
+
+
+# ============================================================
+# TOOL IMPLEMENTATIONS (all sandboxed)
+# ============================================================
+
+def run_bash(command: str, timeout: int = 30) -> dict:
+    """Run a shell command with safety checks."""
+    # Safety check
+    check = guard.validate_command(command)
+    
+    if not check["safe"]:
+        return {
+            "status": "blocked",
+            "output": check["message"],
+            "risk_level": check["risk_level"]
+        }
+
+    # Cap timeout
+    timeout = min(timeout, 120)
+
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=WORKSPACE_DIR,
+            encoding='utf-8',
+            errors='replace'
+        )
+        output = ""
+        if result.stdout:
+            output += f"STDOUT:\n{result.stdout}"
+        if result.stderr:
+            output += f"\nSTDERR:\n{result.stderr}"
+        if not output:
+            output = "(no output)"
+
+        # Prefix with warning if risky
+        prefix = ""
+        if check["risk_level"] == "risky":
+            prefix = check["message"] + "\n\n---\n\n"
+
+        return {
+            "status": "success" if result.returncode == 0 else "error",
+            "returncode": result.returncode,
+            "output": prefix + output.strip(),
+            "risk_level": check["risk_level"]
+        }
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "output": f"Command timed out after {timeout} seconds"}
+    except Exception as e:
+        return {"status": "error", "output": str(e)}
+
+
+def read_file(path: str) -> dict:
+    """Read a file with safety checks."""
+    # Safety check
+    check = guard.validate_file_read(path)
+    
+    if not check["safe"]:
+        return {
+            "status": "blocked",
+            "output": check["message"],
+            "risk_level": "blocked"
+        }
+
+    try:
+        resolved = guard.validate_path(path, allow_workspace_only=False)
+        
+        if not os.path.exists(resolved):
+            return {"status": "error", "output": f"File not found: {resolved}"}
+        
+        if os.path.isdir(resolved):
+            return {"status": "error", "output": f"'{resolved}' is a directory, not a file. Use list_files instead."}
+
+        with open(resolved, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read()
+        
+        return {"status": "success", "output": content}
+    except SafetyViolation as e:
+        return {"status": "blocked", "output": str(e), "risk_level": "blocked"}
+    except Exception as e:
+        return {"status": "error", "output": str(e)}
+
+
+def write_file(path: str, content: str) -> dict:
+    """Write a file with safety checks."""
+    # Safety check
+    check = guard.validate_file_write(path)
+    
+    if not check["safe"]:
+        return {
+            "status": "blocked",
+            "output": check["message"],
+            "risk_level": "blocked"
+        }
+
+    try:
+        resolved = guard.validate_path(path, allow_workspace_only=True)
+        
+        # Create parent directories (only within workspace)
+        parent_dir = os.path.dirname(resolved)
+        os.makedirs(parent_dir, exist_ok=True)
+        
+        with open(resolved, 'w', encoding='utf-8') as f:
+            f.write(content)
+        
+        # Get relative path for display
+        try:
+            display_path = os.path.relpath(resolved, WORKSPACE_DIR)
+        except ValueError:
+            display_path = resolved
+
+        return {
+            "status": "success",
+            "output": f"✅ File written: {display_path} ({len(content)} bytes)\nLocation: {resolved}"
+        }
+    except SafetyViolation as e:
+        return {"status": "blocked", "output": str(e), "risk_level": "blocked"}
+    except Exception as e:
+        return {"status": "error", "output": str(e)}
+
+
+def list_files(path: str = ".") -> dict:
+    """List files with safety checks."""
+    try:
+        resolved = guard.validate_path(path, allow_workspace_only=True)
+        
+        if not os.path.exists(resolved):
+            return {"status": "error", "output": f"Path not found: {resolved}"}
+        
+        items = []
+        for item in sorted(os.listdir(resolved)):
+            full_path = os.path.join(resolved, item)
+            item_type = "📁 DIR " if os.path.isdir(full_path) else "📄 FILE"
+            size = os.path.getsize(full_path) if os.path.isfile(full_path) else "-"
+            items.append(f"  {item_type} {item} ({size})")
+        
+        header = f"Contents of: {os.path.relpath(resolved, WORKSPACE_DIR) or 'workspace'}\n"
+        return {
+            "status": "success",
+            "output": header + "\n".join(items) if items else header + "(empty directory)"
+        }
+    except SafetyViolation as e:
+        return {"status": "blocked", "output": str(e), "risk_level": "blocked"}
+    except Exception as e:
+        return {"status": "error", "output": str(e)}
+
+
+def web_search(query: str) -> dict:
+    """Search the web using DuckDuckGo (no API key needed)."""
+    try:
+        url = "https://api.duckduckgo.com/"
+        params = {
+            "q": query,
+            "format": "json",
+            "no_html": 1,
+            "skip_disambig": 1
+        }
+        
+        with httpx.Client(timeout=15) as client:
+            resp = client.get(url, params=params)
+            data = resp.json()
+        
+        results = []
+        
+        if data.get("Abstract"):
+            results.append(f"Summary: {data['Abstract']}")
+            results.append(f"Source: {data.get('AbstractURL', 'N/A')}")
+        
+        if data.get("Answer"):
+            results.append(f"Answer: {data['Answer']}")
+        
+        for topic in data.get("RelatedTopics", [])[:5]:
+            if isinstance(topic, dict) and "Text" in topic:
+                results.append(f"- {topic['Text']}")
+                if topic.get("FirstURL"):
+                    results.append(f"  URL: {topic['FirstURL']}")
+        
+        if not results:
+            results.append("No direct results found. Try a different query or use run_bash for curl-based search.")
+        
+        return {"status": "success", "output": "\n".join(results)}
+    except Exception as e:
+        return {"status": "error", "output": f"Search error: {str(e)}"}
+
+
+def pip_install(package: str) -> dict:
+    """Install a Python package with safety checks."""
+    # Safety check
+    check = guard.validate_pip_install(package)
+    
+    if not check["safe"]:
+        return {
+            "status": "blocked",
+            "output": check["message"],
+            "risk_level": "blocked"
+        }
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", package, "--quiet"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            encoding='utf-8',
+            errors='replace'
+        )
+        output = result.stdout or ""
+        if result.stderr:
+            output += result.stderr
+        
+        if result.returncode == 0:
+            return {
+                "status": "success",
+                "output": f"✅ Successfully installed: {package}\n{output.strip()}"
+            }
+        else:
+            return {
+                "status": "error",
+                "output": f"❌ Failed to install {package}\n{output.strip()}"
+            }
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "output": "Installation timed out (120s)"}
+    except Exception as e:
+        return {"status": "error", "output": str(e)}
+
+
+def run_python(code: str) -> dict:
+    """Execute Python code with safety checks."""
+    # Safety check
+    check = guard.validate_python_code(code)
+    
+    if not check["safe"]:
+        return {
+            "status": "blocked",
+            "output": check["message"],
+            "risk_level": "blocked"
+        }
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=WORKSPACE_DIR,
+            encoding='utf-8',
+            errors='replace'
+        )
+        output = ""
+        if result.stdout:
+            output += f"Output:\n{result.stdout}"
+        if result.stderr:
+            output += f"\nErrors:\n{result.stderr}"
+        if not output:
+            output = "(no output - code executed successfully)"
+
+        # Prefix with warning if risky
+        prefix = ""
+        if check["risk_level"] == "risky":
+            prefix = check["message"] + "\n\n---\n\n"
+        
+        return {
+            "status": "success" if result.returncode == 0 else "error",
+            "output": prefix + output.strip(),
+            "risk_level": check["risk_level"]
+        }
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "output": "Python execution timed out (60s)"}
+    except Exception as e:
+        return {"status": "error", "output": str(e)}
+
+
+# ============================================================
+# TOOL DEFINITIONS (OpenAI function calling format)
+# ============================================================
+
+TOOL_DEFINITIONS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "run_bash",
+            "description": "Run a shell command on the user's Windows computer (PowerShell/cmd). Commands run in the sandboxed workspace directory. DANGEROUS COMMANDS (format, del system files, shutdown, etc.) will be BLOCKED automatically. Use this for git, npm, compiling, running programs, etc.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The shell command to execute. Must be safe and non-destructive."
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Timeout in seconds (default: 30, max: 120)"
+                    }
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read the contents of a file. Can read files in the workspace and most files on the system, but CANNOT read credential files (.ssh keys, .env, .aws credentials) for security.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path (relative to workspace or absolute)"
+                    }
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Create or overwrite a file. ONLY works within the workspace directory - attempts to write outside the workspace (especially to system directories like C:\\Windows) will be BLOCKED. Use this to create code, configs, documents, etc.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path (relative to workspace or absolute - must be within workspace)"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The full content to write to the file"
+                    }
+                },
+                "required": ["path", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_files",
+            "description": "List files and directories within the workspace. Only works within the sandboxed workspace directory.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Directory path to list (default: workspace root)"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for information using DuckDuckGo. Use when you need facts, documentation, or current information.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pip_install",
+            "description": "Install a Python package using pip. Known malicious/typosquat packages are blocked. Use when a required Python library is not available.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "package": {
+                        "type": "string",
+                        "description": "The package name to install (e.g., 'requests', 'numpy', 'pandas')"
+                    }
+                },
+                "required": ["package"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_python",
+            "description": "Execute Python code directly in the workspace directory. Dangerous patterns (eval, exec, os.system, system file deletion) are flagged. Use for calculations, data processing, quick scripts, etc.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "The Python code to execute"
+                    }
+                },
+                "required": ["code"]
+            }
+        }
+    }
+]
+
+# Map tool names to functions
+TOOL_FUNCTIONS = {
+    "run_bash": run_bash,
+    "read_file": read_file,
+    "write_file": write_file,
+    "list_files": list_files,
+    "web_search": web_search,
+    "pip_install": pip_install,
+    "run_python": run_python,
+}
