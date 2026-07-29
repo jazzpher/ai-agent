@@ -183,12 +183,13 @@ def stop_chat():
 
 def start_chat(message, history, api_key, model, file_paths):
     """
-    Streaming entry point. Yields (history, metrics, send_btn, stop_btn, file_status, uploaded_files).
+    Streaming entry point. Yields 7 values per yield:
+    (history, metrics, send_btn, stop_btn, file_status, uploaded_files, msg)
 
     Send ↔ Stop button toggle:
     - On entry: swap Send → Stop (hide Send, show Stop with red color)
     - During streaming: keep Stop visible
-    - On exit: restore Send (show Send, hide Stop) AND clear uploaded files
+    - On exit: restore Send (show Send, hide Stop) AND clear uploaded files AND clear msg
 
     File upload behavior:
     - Files uploaded before this turn are attached and used
@@ -196,10 +197,12 @@ def start_chat(message, history, api_key, model, file_paths):
     - The actual files in the workspace remain (so the agent can still reference them)
     - To re-attach the same file, the user must re-upload it
     """
-    # Preserved state: keep the file_status / uploaded_files as-is during the
-    # early "nothing to do" path
+    no_change = gr.update()
+
+    # Preserved state: keep everything as-is during the "nothing to do" path
     if not message.strip() and not file_paths:
-        yield history or [], format_metrics(), gr.update(), gr.update(), gr.update(), gr.update()
+        yield (history or [], format_metrics(),
+               no_change, no_change, no_change, no_change, no_change)
         return
 
     # Reset cancel flag
@@ -222,12 +225,14 @@ def start_chat(message, history, api_key, model, file_paths):
         stop_state,
         cur_status,
         list(file_paths or []),
+        no_change,        # keep msg as-is during running
     )
 
     # ---- Phase 2: Run the stream (keep Stop visible) ----
     try:
         for h, metrics in chat_stream(message, history, api_key, model, file_paths):
-            yield h, metrics, send_state, stop_state, cur_status, list(file_paths or [])
+            yield (h, metrics, send_state, stop_state,
+                   cur_status, list(file_paths or []), no_change)
     except Exception as e:
         # Surface the error in the metrics panel so the user can see it
         err = f"❌ {type(e).__name__}: {e}"
@@ -235,10 +240,11 @@ def start_chat(message, history, api_key, model, file_paths):
             history.append({"role": "assistant", "content": err})
         else:
             history = [{"role": "assistant", "content": err}]
-        yield history, err, send_state, stop_state, cur_status, list(file_paths or [])
+        yield (history, err, send_state, stop_state,
+               cur_status, list(file_paths or []), no_change)
     finally:
         # ---- Phase 3: Exit "running" mode ----
-        # Restore buttons AND clear uploaded files (so the next prompt starts clean)
+        # Restore buttons, clear uploaded files, clear msg textbox
         yield (
             history if history else [],
             gr.update(),       # keep metrics as-is
@@ -246,6 +252,7 @@ def start_chat(message, history, api_key, model, file_paths):
             gr.update(visible=False, interactive=False, value="⏹️"),  # hide Stop
             gr.update(value="No files uploaded"),  # clear file_status text
             [],                                     # clear uploaded_files state
+            gr.update(value=""),                     # clear msg textbox
         )
 
 
@@ -415,8 +422,12 @@ def build_app():
         # Main chat event
         chat_inputs = [msg, chatbot, api_key_input, model_input, uploaded_files]
         # Outputs: chatbot (history), metrics, send_btn, stop_btn,
-        #          file_status, uploaded_files (so we can clear on exit)
-        chat_outputs = [chatbot, metrics_md, send_btn, stop_btn, file_status, uploaded_files]
+        #          file_status, uploaded_files (clear on exit),
+        #          msg (clear textbox on exit)
+        chat_outputs = [
+            chatbot, metrics_md, send_btn, stop_btn,
+            file_status, uploaded_files, msg,
+        ]
 
         send_btn.click(
             start_chat,
