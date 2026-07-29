@@ -255,9 +255,54 @@ def test_docker_module_imports():
         check("sandbox_docker imports", False, f"({e})")
 
 
+def test_conversation_trim():
+    section("Conversation Trim (context overflow protection)")
+    from agent import AIAgent
+
+    a = AIAgent(api_key="fake")
+    # Build a large conversation: system + 100 user/assistant/tool messages
+    a.messages = [{"role": "system", "content": "system prompt"}]
+    a.messages.append({"role": "user", "content": "turn 1"})
+    a.messages.append({"role": "assistant", "content": "x" * 1200})  # oversized
+    a.messages.append({"role": "tool", "content": "y" * 6000})      # oversized
+    for i in range(60):
+        a.messages.append({"role": "user", "content": f"turn {i}"})
+        a.messages.append({"role": "assistant", "content": f"resp {i}"})
+
+    before = sum(len(str(m.get("content", ""))) for m in a.messages)
+    before_count = len(a.messages)
+    a._trim_conversation_history()
+    after = sum(len(str(m.get("content", ""))) for m in a.messages)
+    after_count = len(a.messages)
+
+    # Count should be reduced to <= max_context_messages (50)
+    check(
+        f"message count reduced ({before_count} -> {after_count})",
+        after_count <= a.max_context_messages,
+    )
+    # Total chars should be MUCH smaller
+    check(
+        f"total chars reduced (~{before//1000}k -> {after})",
+        after < before // 10,
+    )
+    # Oversized tool content should be truncated
+    tool_msgs = [m for m in a.messages if m.get("role") == "tool"]
+    if tool_msgs:
+        check(
+            "oversized tool content truncated",
+            all(len(m["content"]) < 10000 for m in tool_msgs),
+        )
+    # System message preserved at start
+    check(
+        "system message preserved",
+        a.messages and a.messages[0].get("role") == "system",
+    )
+
+
 def test_image_tools():
     section("Image Tools")
     from tools import process_image, download_file, remove_background, image_search, HAS_DDG
+    # (existing implementation follows)
 
     # Create a test image (simple 100x100 white square with a colored dot)
     from PIL import Image
@@ -340,6 +385,7 @@ def main():
     test_new_tools_registered()
     test_docker_module_imports()
     test_docker_fallback()
+    test_conversation_trim()
     test_image_tools()
 
     print("\n" + "=" * 60)

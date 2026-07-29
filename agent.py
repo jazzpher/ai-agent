@@ -366,10 +366,44 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
     # ===========================================================
 
     def _trim_conversation_history(self):
+        """
+        Keep `self.messages` bounded so the LLM context doesn't grow unbounded.
+
+        Strategy:
+        1. Always keep the system message (slot 0).
+        2. Keep the most recent N messages.
+        3. For each surviving tool result, if it's over _LARGE_TOOL_RESULT_CHARS,
+           replace it with a placeholder so it doesn't blow up the context.
+        4. For each surviving assistant message, if it's over _LARGE_ASSISTANT_CHARS,
+           replace it with a brief summary.
+        """
+        # Bound 1: Truncate oversized tool result payloads
+        _LARGE_TOOL_RESULT_CHARS = 4000
+        for m in self.messages:
+            if m.get("role") == "tool" and isinstance(m.get("content"), str):
+                if len(m["content"]) > _LARGE_TOOL_RESULT_CHARS:
+                    m["content"] = (
+                        m["content"][:_LARGE_TOOL_RESULT_CHARS]
+                        + f"\n\n[... truncated {len(m['content']) - _LARGE_TOOL_RESULT_CHARS} chars ...]"
+                    )
+
+        # Bound 2: Truncate oversized assistant messages
+        _LARGE_ASSISTANT_CHARS = 2000
+        for m in self.messages:
+            if m.get("role") == "assistant" and isinstance(m.get("content"), str):
+                if len(m["content"]) > _LARGE_ASSISTANT_CHARS:
+                    m["content"] = (
+                        m["content"][:_LARGE_ASSISTANT_CHARS]
+                        + f"\n\n[... truncated {len(m['content']) - _LARGE_ASSISTANT_CHARS} chars ...]"
+                    )
+
+        # Bound 3: Drop oldest messages if still over the threshold
         if len(self.messages) <= self.max_context_messages:
             return
-        system_msg = self.messages[0] if self.messages and self.messages[0]["role"] == "system" else None
-        recent = self.messages[-(self.max_context_messages - 1):]
+        system_msg = None
+        if self.messages and self.messages[0].get("role") == "system":
+            system_msg = self.messages[0]
+        recent = self.messages[-(self.max_context_messages - 1):] if system_msg else self.messages[-self.max_context_messages:]
         self.messages = []
         if system_msg:
             self.messages.append(system_msg)
@@ -641,7 +675,11 @@ New direction: <what to do instead>
             return
 
         self.cancel_requested = False
+
+        # ALWAYS trim at the start of every turn so we don't accumulate
+        # infinite tool-call messages from previous turns.
         self._trim_conversation_history()
+
         self.messages.append({"role": "user", "content": user_message})
 
         if not any(m.get("role") == "system" for m in self.messages):
@@ -984,8 +1022,15 @@ New direction: <what to do instead>
             if len(self.messages) > self.max_context_messages * 2:
                 self._trim_conversation_history()
 
-        # Loop exit
-        self.messages.append({"role": "assistant", "content": full_response})
+        # Loop exit — store a brief summary, NOT the full response (which can be
+        # many KB of tool-call dumps and would balloon the history).
+        summary = (
+            f"[Turn ended after {self.iteration_count} iterations. "
+            f"Elapsed: {time.time() - start_time:.1f}s. "
+            f"Tool calls: {self.tool_call_count}. "
+            f"Final response excerpt: {full_response[:300]!s}]"
+        )
+        self.messages.append({"role": "assistant", "content": summary})
         self._log("turn_end", reason="max_iterations_or_budget", iterations=self.iteration_count)
         yield full_response
 
