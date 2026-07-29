@@ -19,6 +19,10 @@ ENV/
 .agent_logs/
 *.log
 
+# Workspace (user uploads + generated files - keep local only)
+workspace/
+!workspace/.gitkeep
+
 # Editor / OS
 .vscode/
 .idea/
