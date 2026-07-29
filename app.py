@@ -128,7 +128,7 @@ def chat_stream(message: str, history: list, api_key: str, model: str, file_path
         agent.set_model(model)
 
     # Copy uploads into workspace
-    processed_paths, _upload_info = copy_uploads_to_workspace(file_paths)
+    processed_paths, upload_info = copy_uploads_to_workspace(file_paths)
 
     # Append file info to user message
     display_message = message
@@ -144,8 +144,8 @@ def chat_stream(message: str, history: list, api_key: str, model: str, file_path
         {"role": "assistant", "content": ""},
     ]
 
-    # Stream agent response
-    for partial in agent.chat_stream(display_message):
+    # Stream agent response (with two-pass analyze-then-act)
+    for partial in agent.chat_stream(display_message, uploaded_files_info=upload_info):
         history[-1]["content"] = partial
         yield history, format_metrics()
 
@@ -247,6 +247,7 @@ def build_app():
                     label="Chat",
                     height=550,
                     type="messages",   # Gradio 5.x required
+                    allow_tags=False,  # Gradio 5.50+ default change
                     show_label=False,
                 )
 
@@ -390,11 +391,11 @@ def build_app():
 # ============================================================
 
 if __name__ == "__main__":
-    # Silence noisy Gradio 5.6.0 introspection warnings (TypeError on bool in
-    # additionalProperties is an internal bug, doesn't affect functionality).
+    # Silence noisy Gradio deprecation warnings (we're pinned to 5.50 for now)
+    import warnings
+    warnings.filterwarnings("ignore", category=DeprecationWarning, module="gradio")
     import logging
     logging.getLogger("uvicorn.error").setLevel(logging.CRITICAL)
-    logging.getLogger("gradio").setLevel(logging.ERROR)
 
     print("=" * 50)
     print("  🤖 AI Agent - Sandboxed Local Assistant")
@@ -416,6 +417,5 @@ if __name__ == "__main__":
         server_port=7860,
         share=False,
         inbrowser=True,
-        show_api=False,
     )
 
