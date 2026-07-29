@@ -337,7 +337,12 @@ Remember: **Quality over speed. Think before you act. Be the expert assistant th
                 presence_penalty=0.1,
             )
             if supports_reasoning:
-                kwargs["reasoning_effort"] = self.reasoning_effort
+                # NVIDIA NIM uses chat_template_kwargs instead of the OpenAI-native
+                # reasoning_effort parameter. We pass it via extra_body so the
+                # openai client doesn't reject it as an unknown kwarg.
+                kwargs["extra_body"] = {
+                    "chat_template_kwargs": {"reasoning_effort": self.reasoning_effort}
+                }
 
             # ---- Streaming with exponential backoff ----
             stream = None
@@ -353,6 +358,19 @@ Remember: **Quality over speed. Think before you act. Be the expert assistant th
                         yield full_response
                         return
                     time.sleep(backoff)
+                except TypeError as e:
+                    # Some models / endpoints reject the reasoning_effort param
+                    # (passed via extra_body). Retry without it.
+                    if "extra_body" in kwargs or "reasoning_effort" in kwargs:
+                        self._log("reasoning_unsupported", error=str(e))
+                        kwargs.pop("extra_body", None)
+                        kwargs.pop("reasoning_effort", None)
+                        continue
+                    self.errors += 1
+                    self._log("fatal_error", error=str(e))
+                    full_response += f"\n\n❌ API Error: {e}"
+                    yield full_response
+                    return
                 except Exception as e:
                     # Non-transient - fail fast
                     self.errors += 1
