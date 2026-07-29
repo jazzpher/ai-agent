@@ -4,13 +4,19 @@ Safety Guardrails & Sandbox for the AI Agent
 Protects the user's system by:
 1. Restricting file operations to the workspace directory
 2. Blocking dangerous shell commands
-3. Preventing path traversal attacks
+3. Preventing path traversal attacks (including symlink-based escapes)
 4. Warning/blocking destructive operations
 5. Protecting system directories and files
+
+IMPORTANT: This is defense-in-depth, not a true OS-level sandbox.
+A determined attacker (or a clever LLM prompt) can still bypass regex-based
+checks. Do NOT run this agent with admin/root privileges or on your only
+laptop. For real isolation, run inside Docker / Windows Sandbox / a VM.
 """
 import os
 import re
 import platform
+import shlex
 from config import WORKSPACE_DIR
 
 
@@ -20,77 +26,77 @@ class SafetyViolation(Exception):
 
 
 class SafetyGuard:
-    """
-    Central safety system that validates all tool operations
-    before they are executed.
-    """
+    """Central safety system that validates all tool operations before they are executed."""
 
     # ===========================================================
     # DANGEROUS COMMANDS - Blocklist
     # ===========================================================
-    
-    # Commands that should NEVER be executed
+
     BLOCKED_COMMANDS = [
         # Windows destructive commands
-        r'\bformat\s+[a-zA-Z]:',           # format C:
-        r'\bdel\s+/[sS]\s+[a-zA-Z]:\\',    # del /s C:\...
-        r'\brd\s+/[sS]\s+[a-zA-Z]:\\(Windows|Program|Users)',  # rd /s C:\Windows
+        r'\bformat\s+[a-zA-Z]:',
+        r'\bdel\s+/[sS]\s+[a-zA-Z]:\\',
+        r'\brd\s+/[sS]\s+[a-zA-Z]:\\(Windows|Program|Users)',
         r'\brmdir\s+/[sS]\s+[a-zA-Z]:\\(Windows|Program|Users)',
-        r'\breg\s+delete\b',               # Registry deletion
-        r'\bregedit\s+/[sS]',              # Silent registry edit
-        r'\bsfc\s+/scannow',               # System file checker
-        r'\bbcdedit\b',                    # Boot config editor
-        r'\bwmic\s+.*\bdelete\b',          # WMI deletion
-        r'\bnet\s+stop\b',                 # Stop services
+        r'\breg\s+delete\b',
+        r'\bregedit\s+/[sS]',
+        r'\bsfc\s+/scannow',
+        r'\bbcdedit\b',
+        r'\bwmic\s+.*\bdelete\b',
+        r'\bnet\s+stop\b',
         r'\btaskkill\s+/[fF]\s+/im\b.*\b(explorer|csrss|winlogon|services|svchost|lsass)\b',
-        r'\bshutdown\b',                   # Shutdown
-        r'\brestart\b.*[/\-]',             # Restart
-        r'\bcipher\s+/[wW]',              # Wipe free space
-        r'\bfsutil\b',                     # File system utility
-        r'\bdiskpart\b',                   # Disk partitioner
-        r'\bnetsh\s+.*\bdelete\b',         # Network config deletion
-        r'\bpowercfg\s+/h\s+off',          # Disable hibernation
-        r'\battrib\s+.*-[rR].*\\Windows',  # Remove read-only from system
-        
+        r'\bshutdown\b',
+        r'\brestart\b.*[/\-]',
+        r'\bcipher\s+/[wW]',
+        r'\bfsutil\b',
+        r'\bdiskpart\b',
+        r'\bnetsh\s+.*\bdelete\b',
+        r'\bpowercfg\s+/h\s+off',
+        r'\battrib\s+.*-[rR].*\\Windows',
+
         # Cross-platform dangerous patterns
-        r'\brm\s+-[rR]f\s+/',             # rm -rf /
-        r'\brm\s+-[rR]f\s+~',             # rm -rf ~
-        r'\bmkfs\b',                        # Format filesystem
-        r'\bdd\s+if=',                      # Disk destroyer
-        r':(){ :\|:& };:',                 # Fork bomb
-        r'\bchmod\s+-R\s+777\s+/',         # Open permissions on root
-        
-        # Network attacks
-        r'\bcurl\b.*\|\s*(bash|sh|cmd|powershell)',   # Download & execute
+        r'\brm\s+-[rR]f\s+/',
+        r'\brm\s+-[rR]f\s+~',
+        r'\bmkfs\b',
+        r'\bdd\s+if=',
+        r':\(\)\s*\{.*\|.*&\s*\};:',  # fork bomb variants
+        r'\bchmod\s+-R\s+777\s+/',
+
+        # Network attacks / download & execute
+        r'\bcurl\b.*\|\s*(bash|sh|cmd|powershell)',
         r'\bwget\b.*\|\s*(bash|sh|cmd|powershell)',
-        r'\biwr\b.*\|\s*iex',                          # PowerShell download & execute
+        r'\biwr\b.*\|\s*iex',
         r'\bInvoke-Expression\b.*\bInvoke-WebRequest\b',
+
+        # Encoded/obfuscated execution (cheap defense)
+        r'\bbase64\s+--decode\b',
+        r'\bFromBase64String\b',
     ]
 
-    # Commands that need extra caution (warn but allow)
     RISKY_COMMANDS = [
-        r'\brm\b',                          # Any delete
-        r'\bdel\b',                         # Windows delete
-        r'\brmdir\b',                       # Remove directory
-        r'\brd\s',                          # Remove directory
-        r'\bmv\b.*\s+/',                    # Move to root paths
-        r'\bmove\b',                        # Windows move
-        r'\bpip\s+uninstall\b',            # Uninstall packages
-        r'\bnpm\s+uninstall\b',            # Uninstall npm packages
-        r'\bgit\s+reset\s+--hard',         # Git hard reset
-        r'\bgit\s+clean\b',               # Git clean
-        r'\bDROP\s+TABLE\b',              # SQL drop
-        r'\bDROP\s+DATABASE\b',           # SQL drop database
-        r'\bsudo\b',                        # Sudo (if somehow on Linux)
-        r'\bkill\b',                        # Kill processes
-        r'\bStop-Process\b',              # PowerShell kill
-        r'\bRemove-Item\s+-Recurse\b',    # PowerShell recursive delete
+        r'\brm\b',
+        r'\bdel\b',
+        r'\brmdir\b',
+        r'\brd\s',
+        r'\bmv\b.*\s+/',
+        r'\bmove\b',
+        r'\bpip\s+uninstall\b',
+        r'\bnpm\s+uninstall\b',
+        r'\bgit\s+reset\s+--hard',
+        r'\bgit\s+clean\b',
+        r'\bDROP\s+TABLE\b',
+        r'\bDROP\s+DATABASE\b',
+        r'\bsudo\b',
+        r'\bkill\b',
+        r'\bStop-Process\b',
+        r'\bRemove-Item\s+-Recurse\b',
+        r'\bSet-ExecutionPolicy\b',
     ]
 
     # ===========================================================
-    # PROTECTED DIRECTORIES - Never touch these
+    # PROTECTED DIRECTORIES
     # ===========================================================
-    
+
     PROTECTED_PATHS_WINDOWS = [
         r'C:\Windows',
         r'C:\Program Files',
@@ -109,78 +115,98 @@ class SafetyGuard:
         '/var/log', '/root',
     ]
 
-    # ===========================================================
-    # PROTECTED FILE EXTENSIONS - Be careful with these
-    # ===========================================================
-    
     PROTECTED_EXTENSIONS = [
-        '.sys', '.dll', '.exe', '.msi',    # System files
-        '.reg',                              # Registry
-        '.bat', '.cmd',                      # Batch files (outside workspace)
-        '.ps1',                              # PowerShell scripts (outside workspace)
+        '.sys', '.dll', '.exe', '.msi',
+        '.reg',
+        '.bat', '.cmd',
+        '.ps1',
     ]
 
+    # Known dangerous / typosquat pip packages
+    KNOWN_BAD_PACKAGES = {
+        'colourama', 'python3-dateutil', 'jeIlyfish', 'python-binance',
+        'cryptocode', 'colorama-real', 'requirements', 'setup.py',
+        'libpeshka', 'libprocesshider', 'windows-glass', 'win32api-loader',
+    }
+
+    # Strict regex for pip package spec
+    # Allows: name, [extras], version specifiers, url/path? No, only PyPI.
+    PIP_SPEC_RE = re.compile(
+        r'^[A-Za-z0-9][A-Za-z0-9._-]*'           # package name
+        r'(\[[A-Za-z0-9._,\-\s]+\])?'            # optional [extras]
+        r'($|'                                     # end
+        r'\s*[<>=!~]=?\s*[A-Za-z0-9.*]+'         # version spec
+        r'(\s*,\s*[A-Za-z0-9._\-]+\s*[<>=!~]=?\s*[A-Za-z0-9.*]+)*'  # more specs
+        r')$'
+    )
+
     def __init__(self, workspace_dir: str = None):
-        self.workspace_dir = workspace_dir or WORKSPACE_DIR
-        self._blocked_patterns = [
-            re.compile(p, re.IGNORECASE) for p in self.BLOCKED_COMMANDS
-        ]
-        self._risky_patterns = [
-            re.compile(p, re.IGNORECASE) for p in self.RISKY_COMMANDS
-        ]
+        self.workspace_dir = os.path.realpath(workspace_dir or WORKSPACE_DIR)
+        self._blocked_patterns = [re.compile(p, re.IGNORECASE) for p in self.BLOCKED_COMMANDS]
+        self._risky_patterns = [re.compile(p, re.IGNORECASE) for p in self.RISKY_COMMANDS]
 
     # ===========================================================
-    # PATH VALIDATION
+    # PATH VALIDATION (with symlink resolution)
     # ===========================================================
 
-    def validate_path(self, path: str, allow_workspace_only: bool = True) -> str:
+    def _is_within(self, child: str, parent: str) -> bool:
+        """True iff realpath(child) is the same as or inside realpath(parent)."""
+        try:
+            child_r = os.path.realpath(child)
+            parent_r = os.path.realpath(parent)
+            # commonpath raises ValueError on different drives (Windows) or roots
+            return os.path.commonpath([child_r, parent_r]) == parent_r
+        except (ValueError, OSError):
+            return False
+
+    def validate_path(self, path: str, allow_workspace_only: bool = True, must_exist: bool = False) -> str:
         """
-        Validate and resolve a file path.
-        Returns the resolved absolute path.
+        Validate and resolve a file path. Returns the resolved (realpath) absolute path.
         Raises SafetyViolation if the path is dangerous.
         """
         if not path:
             raise SafetyViolation("Path cannot be empty")
 
-        # Resolve to absolute path
-        if not os.path.isabs(path):
-            resolved = os.path.normpath(os.path.join(self.workspace_dir, path))
-        else:
-            resolved = os.path.normpath(path)
+        # Reject NUL bytes and other control characters that some shells honor
+        if any(ord(c) < 32 for c in path):
+            raise SafetyViolation(f"Path contains control characters: {path!r}")
 
-        # Check for path traversal attempts
-        if '..' in path:
-            # Allow only if resolved path is still within workspace
-            if not resolved.startswith(os.path.normpath(self.workspace_dir)):
-                raise SafetyViolation(
-                    f"🚫 Path traversal detected! '{path}' tries to escape the workspace.\n"
-                    f"All file operations must stay within: {self.workspace_dir}"
-                )
+        # Resolve to absolute via realpath so symlinks are followed
+        try:
+            if os.path.isabs(path):
+                resolved = os.path.realpath(path)
+            else:
+                resolved = os.path.realpath(os.path.join(self.workspace_dir, path))
+        except (OSError, ValueError) as e:
+            raise SafetyViolation(f"Cannot resolve path {path!r}: {e}")
 
-        # Check against protected paths
-        protected = (
-            self.PROTECTED_PATHS_WINDOWS if platform.system() == 'Windows'
-            else self.PROTECTED_PATHS_UNIX
-        )
-        
-        resolved_lower = resolved.lower()
-        for protected_path in protected:
-            if resolved_lower.startswith(protected_path.lower()):
-                raise SafetyViolation(
-                    f"🚫 BLOCKED: '{resolved}' is a protected system path!\n"
-                    f"Protected: {protected_path}\n"
-                    f"You can only work within the workspace: {self.workspace_dir}"
-                )
+        # Must-exist check (used by read_file, list_files)
+        if must_exist and not os.path.exists(resolved):
+            raise SafetyViolation(f"Path does not exist: {resolved}")
 
-        # Check workspace restriction for write operations
-        if allow_workspace_only:
-            workspace_norm = os.path.normpath(self.workspace_dir)
-            if not resolved.startswith(workspace_norm):
-                raise SafetyViolation(
-                    f"🚫 BLOCKED: '{resolved}' is outside the workspace!\n"
-                    f"File operations are restricted to: {self.workspace_dir}\n"
-                    f"This prevents accidental damage to your system."
-                )
+        # Workspace-only check for write operations
+        if allow_workspace_only and not self._is_within(resolved, self.workspace_dir):
+            raise SafetyViolation(
+                f"🚫 BLOCKED: '{resolved}' is outside the workspace!\n"
+                f"File operations are restricted to: {self.workspace_dir}\n"
+                f"This prevents accidental damage to your system."
+            )
+
+        # Protected system paths (applies even for reads, unless the resolved
+        # path is inside the workspace which is already vetted above)
+        if not self._is_within(resolved, self.workspace_dir):
+            protected = (
+                self.PROTECTED_PATHS_WINDOWS if platform.system() == 'Windows'
+                else self.PROTECTED_PATHS_UNIX
+            )
+            resolved_lower = resolved.lower()
+            for protected_path in protected:
+                if resolved_lower.startswith(protected_path.lower()):
+                    raise SafetyViolation(
+                        f"🚫 BLOCKED: '{resolved}' is a protected system path!\n"
+                        f"Protected: {protected_path}\n"
+                        f"You can only work within the workspace: {self.workspace_dir}"
+                    )
 
         return resolved
 
@@ -189,23 +215,11 @@ class SafetyGuard:
     # ===========================================================
 
     def validate_command(self, command: str) -> dict:
-        """
-        Validate a shell command before execution.
-        Returns:
-            {
-                "safe": True/False,
-                "risk_level": "safe" | "risky" | "blocked",
-                "message": explanation
-            }
-        """
         if not command or not command.strip():
-            return {
-                "safe": False,
-                "risk_level": "blocked",
-                "message": "🚫 Empty command"
-            }
+            return {"safe": False, "risk_level": "blocked", "message": "🚫 Empty command"}
 
-        # Check blocked commands
+        # Detect shell metacharacter smuggling (best-effort, not bulletproof)
+        # If a command contains both base64 + execution markers, flag as risky
         for pattern in self._blocked_patterns:
             if pattern.search(command):
                 return {
@@ -217,10 +231,9 @@ class SafetyGuard:
                         f"This command could damage your system and has been blocked "
                         f"by the safety guardrails.\n\n"
                         f"Matched pattern: `{pattern.pattern}`"
-                    )
+                    ),
                 }
 
-        # Check risky commands (warn but allow)
         for pattern in self._risky_patterns:
             if pattern.search(command):
                 return {
@@ -228,167 +241,128 @@ class SafetyGuard:
                     "risk_level": "risky",
                     "message": (
                         f"⚠️ RISKY COMMAND detected: `{command}`\n\n"
-                        f"This command may delete or modify files. "
-                        f"Proceeding with caution."
-                    )
+                        f"This command may delete or modify files. Proceeding with caution."
+                    ),
                 }
 
-        return {
-            "safe": True,
-            "risk_level": "safe",
-            "message": "✅ Command looks safe"
-        }
+        return {"safe": True, "risk_level": "safe", "message": "✅ Command looks safe"}
 
     # ===========================================================
     # FILE WRITE VALIDATION
     # ===========================================================
 
     def validate_file_write(self, path: str) -> dict:
-        """
-        Validate a file write operation.
-        Returns safety check result dict.
-        """
         try:
             resolved = self.validate_path(path, allow_workspace_only=True)
         except SafetyViolation as e:
+            return {"safe": False, "risk_level": "blocked", "message": str(e)}
+
+        _, ext = os.path.splitext(resolved)
+        if ext.lower() in self.PROTECTED_EXTENSIONS:
             return {
                 "safe": False,
                 "risk_level": "blocked",
-                "message": str(e)
+                "message": (
+                    f"🚫 BLOCKED: Writing {ext} files is not allowed!\n"
+                    f"This protects system files from being overwritten."
+                ),
             }
 
-        # Check protected extensions outside workspace
-        _, ext = os.path.splitext(resolved)
-        if ext.lower() in self.PROTECTED_EXTENSIONS:
-            workspace_norm = os.path.normpath(self.workspace_dir)
-            if not resolved.startswith(workspace_norm):
-                return {
-                    "safe": False,
-                    "risk_level": "blocked",
-                    "message": (
-                        f"🚫 BLOCKED: Writing {ext} files outside workspace is not allowed!\n"
-                        f"This protects system files from being overwritten."
-                    )
-                }
-
-        return {
-            "safe": True,
-            "risk_level": "safe",
-            "message": f"✅ Safe to write: {resolved}"
-        }
+        return {"safe": True, "risk_level": "safe", "message": f"✅ Safe to write: {resolved}"}
 
     # ===========================================================
     # FILE READ VALIDATION
     # ===========================================================
 
+    SENSITIVE_PATTERNS = [
+        re.compile(r'\.ssh[/\\](id_rsa|id_ed25519|authorized_keys)', re.IGNORECASE),
+        re.compile(r'\.aws[/\\]credentials', re.IGNORECASE),
+        re.compile(r'\.git[/\\]credentials', re.IGNORECASE),
+        re.compile(r'\.git-credentials\b', re.IGNORECASE),
+        re.compile(r'\.netrc\b', re.IGNORECASE),
+        re.compile(r'\.env(\.|$)', re.IGNORECASE),
+        re.compile(r'\bid_rsa(\.|$)', re.IGNORECASE),
+        re.compile(r'\\SAM\b', re.IGNORECASE),
+    ]
+
     def validate_file_read(self, path: str) -> dict:
-        """
-        Validate a file read operation.
-        Reading is more permissive than writing, but still blocks sensitive files.
-        """
         try:
             resolved = self.validate_path(path, allow_workspace_only=False)
         except SafetyViolation as e:
-            return {
-                "safe": False,
-                "risk_level": "blocked",
-                "message": str(e)
-            }
+            return {"safe": False, "risk_level": "blocked", "message": str(e)}
 
-        # Block reading sensitive files
-        sensitive_patterns = [
-            r'\.ssh[/\\](id_rsa|id_ed25519|authorized_keys)',
-            r'\.aws[/\\]credentials',
-            r'\.env\b',
-            r'\.git[/\\]credentials',
-            r'\.netrc',
-            r'SAM\b',
-            r'SYSTEM\b.*\bRegistry',
-            r'\.git-credentials',
-        ]
-        
-        for pattern in sensitive_patterns:
-            if re.search(pattern, resolved, re.IGNORECASE):
+        for pattern in self.SENSITIVE_PATTERNS:
+            if pattern.search(resolved):
                 return {
                     "safe": False,
                     "risk_level": "blocked",
                     "message": (
                         f"🚫 BLOCKED: '{resolved}' appears to contain sensitive credentials.\n"
                         f"Reading credential files is not allowed for security."
-                    )
+                    ),
                 }
 
-        return {
-            "safe": True,
-            "risk_level": "safe",
-            "message": f"✅ Safe to read: {resolved}"
-        }
+        return {"safe": True, "risk_level": "safe", "message": f"✅ Safe to read: {resolved}"}
 
     # ===========================================================
     # PIP INSTALL VALIDATION
     # ===========================================================
 
     def validate_pip_install(self, package: str) -> dict:
-        """
-        Validate a pip install request.
-        Blocks known malicious or dangerous packages.
-        """
-        # Known dangerous/typosquat packages
-        KNOWN_BAD_PACKAGES = [
-            'colourama',       # Typosquat of colorama
-            'python3-dateutil', # Typosquat
-            'jeIlyfish',       # Typosquat of jellyfish (capital I)
-            'python-binance',  # Often targeted
-            'cryptocode',      # Known malware
-            'colorama-real',   # Typosquat
-        ]
+        if not package or not package.strip():
+            return {"safe": False, "risk_level": "blocked", "message": "🚫 Empty package name"}
 
-        package_lower = package.lower().strip()
+        # Strict format check first - this prevents shell-style injection
+        if not self.PIP_SPEC_RE.match(package.strip()):
+            return {
+                "safe": False,
+                "risk_level": "blocked",
+                "message": (
+                    f"🚫 BLOCKED: '{package}' is not a valid pip package specifier.\n"
+                    f"Allowed: name, name[extras], name==1.2.3, name>=1.0,<2.0, etc."
+                ),
+            }
 
-        if package_lower in [p.lower() for p in KNOWN_BAD_PACKAGES]:
+        # Pull out the base name (before any version specifier or extras)
+        base_name = re.split(r'[\[<>=!~,\s]', package.strip(), 1)[0].lower()
+        if base_name in self.KNOWN_BAD_PACKAGES:
             return {
                 "safe": False,
                 "risk_level": "blocked",
                 "message": (
                     f"🚫 BLOCKED: '{package}' is a known dangerous/typosquat package!\n"
                     f"This package has been flagged as potentially malicious."
-                )
+                ),
             }
 
-        # Warn about packages with --user or system-wide flags
-        if '--system' in package or '--target' in package:
+        if '--system' in package or '--target' in package or '-t' in package.split():
             return {
                 "safe": True,
                 "risk_level": "risky",
-                "message": f"⚠️ Installing with system flags: {package}"
+                "message": f"⚠️ Installing with system/target flags: {package}",
             }
 
-        return {
-            "safe": True,
-            "risk_level": "safe",
-            "message": f"✅ Safe to install: {package}"
-        }
+        return {"safe": True, "risk_level": "safe", "message": f"✅ Safe to install: {package}"}
 
     # ===========================================================
-    # PYTHON CODE VALIDATION
+    # PYTHON CODE VALIDATION (best-effort, NOT a real sandbox)
     # ===========================================================
+
+    DANGEROUS_PY_PATTERNS = [
+        (re.compile(r'\bos\.system\s*\('), "os.system()"),
+        (re.compile(r'\bsubprocess\.[A-Za-z_]*\(.*shell\s*=\s*True', re.IGNORECASE), "subprocess(shell=True)"),
+        (re.compile(r'(^|[^.\w])eval\s*\('), "eval()"),
+        (re.compile(r'(^|[^.\w])exec\s*\('), "exec()"),
+        (re.compile(r'\b__import__\s*\('), "__import__()"),
+        (re.compile(r'compile\s*\(.*exec', re.IGNORECASE), "compile(...,'exec')"),
+        (re.compile(r'\bos\.remove\s*\(.*[\\/]Windows', re.IGNORECASE), "Deleting system files via os.remove"),
+        (re.compile(r'\bshutil\.rmtree\s*\(.*[\\/]Windows', re.IGNORECASE), "Deleting system dirs via shutil.rmtree"),
+    ]
 
     def validate_python_code(self, code: str) -> dict:
-        """
-        Basic validation of Python code before execution.
-        """
-        dangerous_patterns = [
-            (r'\bos\.system\s*\(', "os.system() - use subprocess instead"),
-            (r'\beval\s*\(', "eval() - potentially dangerous"),
-            (r'\bexec\s*\(', "exec() - potentially dangerous"),
-            (r'\b__import__\s*\(', "__import__() - dynamic import"),
-            (r'\bos\.remove\s*\(.*/(Windows|Program)', "Deleting system files"),
-            (r'\bshutil\.rmtree\s*\(.*/(Windows|Program)', "Deleting system dirs"),
-        ]
-
         warnings = []
-        for pattern, desc in dangerous_patterns:
-            if re.search(pattern, code):
+        for pattern, desc in self.DANGEROUS_PY_PATTERNS:
+            if pattern.search(code):
                 warnings.append(desc)
 
         if warnings:
@@ -396,23 +370,19 @@ class SafetyGuard:
                 "safe": True,
                 "risk_level": "risky",
                 "message": (
-                    f"⚠️ Potentially risky Python code detected:\n"
+                    f"⚠️ Potentially risky Python patterns detected:\n"
                     + "\n".join(f"  - {w}" for w in warnings)
-                )
+                    + "\n\nThis is a warning only. The code WILL run. Review it carefully."
+                ),
             }
 
-        return {
-            "safe": True,
-            "risk_level": "safe",
-            "message": "✅ Code looks safe"
-        }
+        return {"safe": True, "risk_level": "safe", "message": "✅ Code looks safe"}
 
     # ===========================================================
-    # SUMMARY / STATUS
+    # UTILITIES
     # ===========================================================
 
     def get_sandbox_info(self) -> str:
-        """Return a human-readable sandbox description."""
         return (
             f"🛡️ **Sandbox Active**\n"
             f"- Workspace: `{self.workspace_dir}`\n"
@@ -423,8 +393,22 @@ class SafetyGuard:
         )
 
 
-# ============================================================
-# SINGLETON INSTANCE
-# ============================================================
+# Singleton - lazy (don't import-time init to allow tests to override)
+_guard: SafetyGuard | None = None
 
-guard = SafetyGuard()
+
+def _get_guard() -> SafetyGuard:
+    global _guard
+    if _guard is None:
+        _guard = SafetyGuard()
+    return _guard
+
+
+# Backward-compat: `guard.validate_command(...)` etc.
+class _GuardProxy:
+    def __getattr__(self, name):
+        return getattr(_get_guard(), name)
+
+
+guard = _GuardProxy()
+

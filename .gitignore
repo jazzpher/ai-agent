@@ -1,0 +1,32 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# Backups (stop committing these!)
+*.backup
+*.backup_*
+*.backup_thinking
+.backup_*/
+
+# Agent runtime
+.agent_logs/
+*.log
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+*.pem
+*.key
+

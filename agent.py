@@ -1,13 +1,70 @@
 ﻿"""
-AI Agent - Main agent loop with STREAMING + THINKING indicators
+AI Agent - Main agent loop with STREAMING + THINKING indicators,
+token/cost tracking, JSONL session logging, persistent memory, and
+exponential backoff on transient API errors.
 """
 import json
 import os
 import time
-from openai import OpenAI
-from config import NVIDIA_API_KEY, NVIDIA_BASE_URL, DEFAULT_MODEL, MAX_ITERATIONS, WORKSPACE_DIR
+import uuid
+from datetime import datetime
+
+from openai import OpenAI, APITimeoutError, APIConnectionError, RateLimitError
+
+from config import (
+    NVIDIA_API_KEY,
+    NVIDIA_BASE_URL,
+    DEFAULT_MODEL,
+    MAX_ITERATIONS,
+    MAX_TOTAL_SECONDS,
+    MAX_CONTEXT_MESSAGES,
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_TEMPERATURE,
+    REASONING_CAPABLE_MODELS,
+    MODEL_PRICING,
+    MEMORY_FILE,
+    LOG_DIR,
+    WORKSPACE_DIR,
+)
 from tools import TOOL_DEFINITIONS, TOOL_FUNCTIONS
 from safety import guard
+
+
+# Best-effort token counting
+try:
+    import tiktoken
+    _ENC = tiktoken.get_encoding("cl100k_base")
+    _HAS_TIKTOKEN = True
+except Exception:
+    _HAS_TIKTOKEN = False
+
+
+def _count_tokens(text: str) -> int:
+    if not text:
+        return 0
+    if _HAS_TIKTOKEN:
+        try:
+            return len(_ENC.encode(text))
+        except Exception:
+            pass
+    # Fallback rough estimate: 1 token ≈ 4 chars
+    return max(1, len(text) // 4)
+
+
+def _model_supports_reasoning(model: str) -> bool:
+    return any(sub in (model or "") for sub in REASONING_CAPABLE_MODELS)
+
+
+def _estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+    pricing = None
+    for key, p in MODEL_PRICING.items():
+        if key in (model or "").lower():
+            pricing = p
+            break
+    if pricing is None:
+        pricing = MODEL_PRICING["default"]
+    return (prompt_tokens / 1_000_000) * pricing["input"] + \
+           (completion_tokens / 1_000_000) * pricing["output"]
 
 
 class AIAgent:
@@ -15,13 +72,53 @@ class AIAgent:
         self.api_key = api_key or NVIDIA_API_KEY
         self.model = model or DEFAULT_MODEL
         self.base_url = base_url or NVIDIA_BASE_URL
-        self.messages = []
+        self.messages: list = []
         self.iteration_count = 0
-        self.reasoning_effort = "high"  # Set to high by default
-        self.cancel_requested = False  # Flag for cancellation
-        self.max_context_messages = 50  # Keep last 50 messages to prevent context overflow
-        
-        self.system_prompt = f"""You are an expert AI assistant with access to tools on the user's Windows computer. You are highly intelligent, methodical, and thorough.
+        self.reasoning_effort = "high"
+        self.cancel_requested = False
+        self.max_context_messages = MAX_CONTEXT_MESSAGES
+
+        # Session-level metrics
+        self.session_id = str(uuid.uuid4())[:8]
+        self.session_start = time.time()
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.total_cost_usd = 0.0
+        self.tool_call_count = 0
+        self.errors = 0
+
+        # Persistent memory (read at startup, written via update_memory tool)
+        self._memory_text = ""
+        self._load_memory()
+
+        self.system_prompt = self._build_system_prompt()
+
+        # JSONL session log
+        self._log_path = os.path.join(LOG_DIR, f"session-{self.session_id}-{datetime.now():%Y%m%d-%H%M%S}.jsonl")
+
+    # ===========================================================
+    # PERSISTENT MEMORY
+    # ===========================================================
+
+    def _load_memory(self):
+        if os.path.exists(MEMORY_FILE):
+            try:
+                with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+                    self._memory_text = f.read().strip()
+            except OSError:
+                self._memory_text = ""
+
+    def _build_system_prompt(self) -> str:
+        memory_block = ""
+        if self._memory_text:
+            memory_block = (
+                "\n\n## 🧠 PERSISTENT MEMORY (loaded from MEMORY.md)\n"
+                "The following facts about the user have been remembered across sessions. "
+                "Honor them unless the user explicitly asks otherwise.\n\n"
+                f"{self._memory_text}\n"
+            )
+
+        return f"""You are an expert AI assistant with access to tools on the user's Windows computer. You are highly intelligent, methodical, and thorough.
 
 ## 🧠 THINKING APPROACH
 
@@ -35,26 +132,29 @@ Before taking ANY action, you MUST:
 
 ## 🛡️ SANDBOX & SAFETY
 
-You operate inside a **sandboxed environment** for the user's safety:
+You operate inside a sandboxed environment for the user's safety. Defense is **layered**:
+- File writes are restricted to the workspace via a path validator that follows symlinks.
+- Dangerous shell commands are blocked by a regex blocklist (best-effort, not bulletproof).
+- Risky commands (rm, del, pip uninstall, etc.) emit a warning but may proceed.
+- Path traversal (`../../`) is prevented.
+- Credential files (.ssh, .env, .aws) are blocked.
+- A strict regex validates pip package names so injection is impossible.
 
-- **Workspace directory**: `{WORKSPACE_DIR}`
-- **File writes** are ONLY allowed inside the workspace. Attempts to write to system directories (C:\\Windows, Program Files, etc.) will be BLOCKED.
-- **Dangerous commands** (format, shutdown, deleting system files, registry edits, etc.) will be BLOCKED automatically.
-- **Risky commands** (rm, del, pip uninstall, etc.) will show a WARNING but may proceed.
-- **Credential files** (.ssh keys, .env, .aws) cannot be read for security.
-- **Path traversal** attacks (../../) are prevented.
+**IMPORTANT HONESTY:** This is defense-in-depth, not an OS-level sandbox. A clever prompt can still bypass regex checks. The user has been told not to run this with admin/root privileges.
 
-When a command or operation is BLOCKED, explain to the user why and suggest a safe alternative.
+When a command is BLOCKED, explain why and suggest a safe alternative. NEVER try to bypass the safety layer.
 
 ## 🛠️ AVAILABLE TOOLS
 
-1. **run_bash** - Execute shell commands (sandboxed, dangerous commands blocked)
-2. **read_file** - Read files (credential files protected)
-3. **write_file** - Create/edit files (workspace only)
-4. **list_files** - List files in workspace
-5. **web_search** - Search the web (DuckDuckGo)
-6. **pip_install** - Install Python packages (malicious packages blocked)
-7. **run_python** - Execute Python code (dangerous patterns flagged)
+1. **run_bash** - Execute shell commands in workspace (dangerous commands blocked)
+2. **read_file** - Read files (supports offset/max_bytes for large files; binary & credentials blocked)
+3. **write_file** - Create/overwrite files (workspace only)
+4. **edit_file** - Surgically replace a string in a file (workspace only) — prefer this for changes
+5. **list_files** - List files in workspace
+6. **web_search** - Real DuckDuckGo search (returns title/snippet/URL)
+7. **fetch_page** - Fetch a URL and return its main text
+8. **pip_install** - Install Python packages (strict spec validation)
+9. **run_python** - Execute Python code (risky patterns flagged as warnings; code still runs)
 
 ## 📋 GUIDELINES FOR INTELLIGENT RESPONSES
 
@@ -67,18 +167,13 @@ When a command or operation is BLOCKED, explain to the user why and suggest a sa
 - **Be methodical** - Execute one logical step at a time
 - **Verify results** - Check if the tool worked as expected
 - **Handle errors gracefully** - If something fails, explain why and try a different approach
-- **Show your work** - Let the user see your thinking process
+- **Prefer edit_file over write_file** for small changes to existing files
+- **Prefer fetch_page after web_search** to read the most useful source
 
 ### After Using Tools:
 - **Summarize what you did** - Clear explanation of the results
 - **Verify success** - Did you actually solve the user's problem?
 - **Suggest next steps** - What could the user do next?
-
-### Quality Standards:
-- **Be precise** - Use exact commands, correct syntax, proper formatting
-- **Be thorough** - Don't skip steps or make assumptions
-- **Be honest** - If you don't know something, say so and search for it
-- **Be helpful** - Provide context, explanations, and educational value
 
 ## 🌍 LANGUAGE SUPPORT
 
@@ -95,58 +190,16 @@ When a command or operation is BLOCKED, explain to the user why and suggest a sa
 - **ALWAYS explain your reasoning** - Help the user understand your thought process
 - **ALWAYS validate your work** - Test, check, and verify before claiming success
 
-## 💡 EXAMPLE OF GOOD THINKING
-
-User: "Gawa ka ng web scraper"
-
-Bad Response:
-```python
-# Just writes code without thinking
-import requests
-# ... incomplete code ...
-```
-
-Good Response:
-"Maganda! Bago ako magsimula, let me think about this:
-
-1. **What kind of scraper?** - Single page or multiple pages?
-2. **What data to extract?** - Text, links, images, tables?
-3. **What tools to use?** - requests + BeautifulSoup for simple sites, Selenium for JavaScript-heavy sites
-4. **Error handling?** - What if the site blocks us? What if the structure changes?
-5. **Output format?** - CSV, JSON, or database?
-
-Let me start by creating a basic scraper with proper error handling, then we can enhance it based on your specific needs..."
-
-Remember: **Quality over speed. Think before you act. Be the expert assistant the user deserves.**"""
+Remember: **Quality over speed. Think before you act. Be the expert assistant the user deserves.**{memory_block}"""
 
     def reset(self):
-        """Reset conversation history."""
+        """Reset conversation history (keeps metrics and memory)."""
         self.messages = []
         self.iteration_count = 0
         self.cancel_requested = False
 
     def cancel(self):
-        """Request cancellation of current operation."""
         self.cancel_requested = True
-
-    def _trim_conversation_history(self):
-        """Trim conversation history to prevent context overflow while preserving important context."""
-        if len(self.messages) <= self.max_context_messages:
-            return
-        
-        # Keep system message (first message) and recent messages
-        system_msg = self.messages[0] if self.messages and self.messages[0]["role"] == "system" else None
-        
-        # Keep last N messages (excluding system message)
-        recent_messages = self.messages[-(self.max_context_messages - 1):]
-        
-        # Rebuild messages list
-        self.messages = []
-        if system_msg:
-            self.messages.append(system_msg)
-        self.messages.extend(recent_messages)
-        
-        print(f"[Memory Management] Trimmed conversation to {len(self.messages)} messages")
 
     def set_model(self, model: str):
         self.model = model
@@ -154,260 +207,305 @@ Remember: **Quality over speed. Think before you act. Be the expert assistant th
     def set_api_key(self, api_key: str):
         self.api_key = api_key
 
-    def _get_client(self):
-        return OpenAI(
-            base_url=self.base_url,
-            api_key=self.api_key
-        )
+    def get_metrics(self) -> dict:
+        elapsed = time.time() - self.session_start
+        return {
+            "session_id": self.session_id,
+            "elapsed_seconds": round(elapsed, 1),
+            "iterations": self.iteration_count,
+            "tool_calls": self.tool_call_count,
+            "errors": self.errors,
+            "prompt_tokens": self.total_prompt_tokens,
+            "completion_tokens": self.total_completion_tokens,
+            "total_tokens": self.total_prompt_tokens + self.total_completion_tokens,
+            "estimated_cost_usd": round(self.total_cost_usd, 4),
+            "model": self.model,
+        }
 
-    def _execute_tool(self, tool_name: str, arguments: dict) -> str:
-        if tool_name not in TOOL_FUNCTIONS:
-            return json.dumps({"status": "error", "output": f"Unknown tool: {tool_name}"})
-        
+    # ===========================================================
+    # CONVERSATION MANAGEMENT
+    # ===========================================================
+
+    def _trim_conversation_history(self):
+        if len(self.messages) <= self.max_context_messages:
+            return
+        system_msg = self.messages[0] if self.messages and self.messages[0]["role"] == "system" else None
+        recent = self.messages[-(self.max_context_messages - 1):]
+        self.messages = []
+        if system_msg:
+            self.messages.append(system_msg)
+        self.messages.extend(recent)
+
+    def _save_and_yield(self, full_response: str, yielded_once: list, finalize: bool):
+        """Persist assistant turn and yield the full text. `finalize=True` means loop is done."""
+        if finalize and (not self.messages or self.messages[-1].get("role") != "assistant"
+                         or self.messages[-1].get("content") != full_response):
+            self.messages.append({"role": "assistant", "content": full_response})
+        yielded_once[0] = True
+        return full_response
+
+    # ===========================================================
+    # LOGGING
+    # ===========================================================
+
+    def _log(self, event: str, **fields):
         try:
-            func = TOOL_FUNCTIONS[tool_name]
-            result = func(**arguments)
-            return json.dumps(result, ensure_ascii=False)
+            record = {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "session": self.session_id,
+                "event": event,
+                "iter": self.iteration_count,
+                **fields,
+            }
+            with open(self._log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError:
+            pass  # logging is best-effort
+
+    # ===========================================================
+    # CLIENT
+    # ===========================================================
+
+    def _get_client(self):
+        return OpenAI(base_url=self.base_url, api_key=self.api_key)
+
+    def _execute_tool(self, tool_name: str, arguments: dict) -> dict:
+        if tool_name not in TOOL_FUNCTIONS:
+            return {"status": "error", "output": f"Unknown tool: {tool_name}"}
+        try:
+            return TOOL_FUNCTIONS[tool_name](**arguments)
         except Exception as e:
-            return json.dumps({"status": "error", "output": str(e)})
+            return {"status": "error", "output": f"Tool raised: {type(e).__name__}: {e}"}
+
+    # ===========================================================
+    # MAIN LOOP
+    # ===========================================================
 
     def chat_stream(self, user_message: str):
-        """
-        Process a user message with STREAMING + THINKING indicators.
-        Yields chunks of text as they arrive from the LLM.
-        """
+        """Process a user message. Yields string chunks (full-response snapshots)."""
         if not self.api_key:
             yield "⚠️ Walang API key! I-set mo muna ang NVIDIA API key sa Settings."
             return
 
-        # Reset cancel flag at start
         self.cancel_requested = False
-
-        # Trim conversation history to prevent context overflow
         self._trim_conversation_history()
-
-        # Add user message
         self.messages.append({"role": "user", "content": user_message})
-        
-        if len(self.messages) == 1:
+
+        # Insert system prompt on the first turn
+        if not any(m.get("role") == "system" for m in self.messages):
             self.messages.insert(0, {"role": "system", "content": self.system_prompt})
 
         client = self._get_client()
         self.iteration_count = 0
         full_response = ""
+        start_time = time.time()
+        supports_reasoning = _model_supports_reasoning(self.model)
+        self._log("user_message", content_len=len(user_message))
+
+        # Reload memory in case a sibling tool wrote to MEMORY.md
+        self._load_memory()
 
         while self.iteration_count < MAX_ITERATIONS:
-            # Check for cancellation
+            # Wall-clock budget
+            if time.time() - start_time > MAX_TOTAL_SECONDS:
+                full_response += f"\n\n⏱️ Reached the {MAX_TOTAL_SECONDS}s wall-clock budget. Stopping."
+                self._log("budget_exceeded", elapsed=time.time() - start_time)
+                break
+
             if self.cancel_requested:
-                cancel_msg = "\n\n⏹️ **Operation cancelled by user.**"
-                full_response += cancel_msg
-                
-                # Save cancellation to maintain memory
-                self.messages.append({"role": "assistant", "content": full_response})
-                
-                yield full_response
-                return
+                full_response += "\n\n⏹️ **Operation cancelled by user.**"
+                self._log("cancelled")
+                break
 
             self.iteration_count += 1
 
-            # Show thinking indicator
             thinking_msg = "\n💭 **Thinking...**\n"
             full_response += thinking_msg
             yield full_response
 
-            try:
-                # Use streaming API with optimized settings for intelligence
-                stream = client.chat.completions.create(
-                    model=self.model,
-                    messages=self.messages,
-                    tools=TOOL_DEFINITIONS,
-                    tool_choice="auto",
-                    temperature=0.3,  # Lower = more focused and logical
-                    max_tokens=8192,  # More tokens for complex reasoning
-                    stream=True,
-                    reasoning_effort=self.reasoning_effort,  # HIGH reasoning effort
-                    top_p=0.95,  # Slightly restrictive for better coherence
-                    frequency_penalty=0.1,  # Reduce repetition
-                    presence_penalty=0.1  # Encourage diverse thinking
-                )
+            # Build the create() kwargs
+            kwargs = dict(
+                model=self.model,
+                messages=self.messages,
+                tools=TOOL_DEFINITIONS,
+                tool_choice="auto",
+                temperature=DEFAULT_TEMPERATURE,
+                max_tokens=DEFAULT_MAX_TOKENS,
+                stream=True,
+                top_p=0.95,
+                frequency_penalty=0.1,
+                presence_penalty=0.1,
+            )
+            if supports_reasoning:
+                kwargs["reasoning_effort"] = self.reasoning_effort
 
-                # Remove thinking indicator and start streaming
-                full_response = full_response.replace(thinking_msg, "")
-
-                # Collect the response
-                content_chunks = []
-                tool_calls_data = {}
-                finish_reason = None
-
-                for chunk in stream:
-                    # Check for cancellation during streaming
-                    if self.cancel_requested:
-                        cancel_msg = "\n\n⏹️ **Operation cancelled by user.**"
-                        full_response += cancel_msg
-                        
-                        # Save cancellation to maintain memory
-                        self.messages.append({"role": "assistant", "content": full_response})
-                        
+            # ---- Streaming with exponential backoff ----
+            stream = None
+            for attempt, backoff in enumerate([1, 2, 4, 8]):
+                try:
+                    stream = client.chat.completions.create(**kwargs)
+                    break
+                except (APITimeoutError, APIConnectionError, RateLimitError) as e:
+                    self.errors += 1
+                    self._log("transient_error", attempt=attempt, error=str(e))
+                    if attempt == 3:
+                        full_response += f"\n\n❌ API unavailable after 4 attempts: {e}"
                         yield full_response
                         return
+                    time.sleep(backoff)
+                except Exception as e:
+                    # Non-transient - fail fast
+                    self.errors += 1
+                    self._log("fatal_error", error=str(e))
+                    full_response += f"\n\n❌ API Error: {e}"
+                    yield full_response
+                    return
 
+            if stream is None:
+                break
+
+            # Remove thinking indicator before we start streaming real text
+            full_response = full_response.replace(thinking_msg, "")
+
+            content_chunks: list = []
+            tool_calls_data: dict = {}
+            finish_reason = None
+            prompt_tokens = completion_tokens = 0
+            stream_error = None
+
+            try:
+                for chunk in stream:
+                    if self.cancel_requested:
+                        full_response += "\n\n⏹️ **Operation cancelled by user.**"
+                        self._log("cancelled_mid_stream")
+                        stream_error = "cancelled"
+                        break
                     if not chunk.choices:
                         continue
-                    
                     delta = chunk.choices[0].delta
                     finish_reason = chunk.choices[0].finish_reason
 
-                    # Stream text content
                     if delta and delta.content:
                         content_chunks.append(delta.content)
                         full_response += delta.content
                         yield full_response
 
-                    # Collect tool calls
                     if delta and delta.tool_calls:
-                        for tool_call_delta in delta.tool_calls:
-                            idx = tool_call_delta.index
+                        for tcd in delta.tool_calls:
+                            idx = tcd.index
                             if idx not in tool_calls_data:
-                                tool_calls_data[idx] = {
-                                    "id": "",
-                                    "name": "",
-                                    "arguments": ""
-                                }
-                            
-                            if tool_call_delta.id:
-                                tool_calls_data[idx]["id"] = tool_call_delta.id
-                            if tool_call_delta.function:
-                                if tool_call_delta.function.name:
-                                    tool_calls_data[idx]["name"] = tool_call_delta.function.name
-                                if tool_call_delta.function.arguments:
-                                    tool_calls_data[idx]["arguments"] += tool_call_delta.function.arguments
-
-                # Check if we have tool calls
-                if tool_calls_data:
-                    # Build tool calls list
-                    tool_calls = []
-                    for idx in sorted(tool_calls_data.keys()):
-                        tc = tool_calls_data[idx]
-                        tool_calls.append({
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": {
-                                "name": tc["name"],
-                                "arguments": tc["arguments"]
-                            }
-                        })
-
-                    # Add assistant message with tool calls
-                    assistant_msg = {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": tool_calls
-                    }
-                    self.messages.append(assistant_msg)
-
-                    # Execute each tool
-                    for tc in tool_calls:
-                        # Check for cancellation before each tool
-                        if self.cancel_requested:
-                            cancel_msg = "\n\n⏹️ **Operation cancelled by user.**"
-                            full_response += cancel_msg
-                            
-                            # Save cancellation to maintain memory
-                            self.messages.append({"role": "assistant", "content": full_response})
-                            
-                            yield full_response
-                            return
-
-                        tool_name = tc["function"]["name"]
-                        try:
-                            arguments = json.loads(tc["function"]["arguments"])
-                        except json.JSONDecodeError:
-                            arguments = {}
-
-                        # Show tool call with EXECUTING indicator
-                        tool_info = f"\n\n🔧 **Using {tool_name}**\n```json\n{json.dumps(arguments, indent=2, ensure_ascii=False)}\n```\n"
-                        full_response += tool_info
-                        yield full_response
-
-                        # Show executing indicator
-                        executing_msg = f"⏳ **Executing {tool_name}...**\n"
-                        full_response += executing_msg
-                        yield full_response
-
-                        # Execute tool
-                        start_time = time.time()
-                        result = self._execute_tool(tool_name, arguments)
-                        elapsed = time.time() - start_time
-
-                        # Check for cancellation after tool execution
-                        if self.cancel_requested:
-                            # Remove executing indicator
-                            full_response = full_response.replace(executing_msg, "")
-                            cancel_msg = "\n\n⏹️ **Operation cancelled by user.**"
-                            full_response += cancel_msg
-                            
-                            # Save cancellation to maintain memory
-                            self.messages.append({"role": "assistant", "content": full_response})
-                            
-                            yield full_response
-                            return
-
-                        # Remove executing indicator
-                        full_response = full_response.replace(executing_msg, "")
-
-                        try:
-                            result_data = json.loads(result)
-                            result_output = result_data.get("output", result)
-                            result_status = result_data.get("status", "unknown")
-                        except:
-                            result_output = result
-                            result_status = "unknown"
-
-                        # Show result
-                        display_output = result_output
-                        if len(display_output) > 2000:
-                            display_output = display_output[:2000] + "\n... (truncated)"
-
-                        if result_status == "blocked":
-                            result_info = f"🚫 **BLOCKED** ({elapsed:.2f}s)\n```\n{display_output}\n```\n"
-                        else:
-                            result_info = f"✅ **Done** ({elapsed:.2f}s)\n```\n{display_output}\n```\n"
-                        
-                        full_response += result_info
-                        yield full_response
-
-                        # Add tool result to messages
-                        self.messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": result
-                        })
-
-                    # Reset for next iteration
-                    content_chunks = []
-                    continue
-
-                else:
-                    # No tool calls - final response complete
-                    final_content = "".join(content_chunks)
-                    self.messages.append({"role": "assistant", "content": final_content})
-                    return
-
+                                tool_calls_data[idx] = {"id": "", "name": "", "arguments": ""}
+                            if tcd.id:
+                                tool_calls_data[idx]["id"] = tcd.id
+                            if tcd.function:
+                                if tcd.function.name:
+                                    tool_calls_data[idx]["name"] = tcd.function.name
+                                if tcd.function.arguments:
+                                    tool_calls_data[idx]["arguments"] += tcd.function.arguments
             except Exception as e:
-                error_msg = f"\n\n❌ API Error: {str(e)}"
-                full_response += error_msg
-                
-                # Save error to maintain memory
-                self.messages.append({"role": "assistant", "content": full_response})
-                
+                self.errors += 1
+                self._log("stream_error", error=str(e))
+                full_response += f"\n\n❌ Stream error: {e}"
                 yield full_response
                 return
 
-        # Max iterations reached
-        warning = f"\n\n⚠️ Naabot ang maximum iterations ({MAX_ITERATIONS}). Ang agent ay huminto.\n\n**Note**: Naaalala ko pa rin ang ating conversation! Pwede kang mag-send ng bagong message para mag-continue tayo mula sa naiwan natin."
-        full_response += warning
-        
-        # CRITICAL: Save the final response to maintain memory
+            # Update token counters (use tiktoken on what we sent/received;
+            # the API may also return usage in the final chunk - check there too)
+            completion_tokens += sum(_count_tokens(c) for c in content_chunks)
+
+            if stream_error == "cancelled":
+                break
+
+            if not tool_calls_data:
+                # Final response
+                self.total_completion_tokens += completion_tokens
+                self.messages.append({"role": "assistant", "content": "".join(content_chunks)})
+                self._log("turn_final", finish_reason=finish_reason, completion_tokens=completion_tokens)
+                return
+
+            # Build tool_calls list
+            tool_calls = []
+            for idx in sorted(tool_calls_data.keys()):
+                tc = tool_calls_data[idx]
+                tool_calls.append({
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                })
+
+            # Persist assistant message with tool_calls
+            self.messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": tool_calls,
+            })
+            self._log("assistant_tool_calls", count=len(tool_calls), names=[tc["function"]["name"] for tc in tool_calls])
+
+            # Execute each tool
+            for tc in tool_calls:
+                if self.cancel_requested:
+                    full_response += "\n\n⏹️ **Operation cancelled by user.**"
+                    self._log("cancelled_before_tool")
+                    break
+
+                tool_name = tc["function"]["name"]
+                try:
+                    arguments = json.loads(tc["function"]["arguments"])
+                except json.JSONDecodeError:
+                    arguments = {}
+
+                self.tool_call_count += 1
+                full_response += (
+                    f"\n\n🔧 **Using {tool_name}**\n"
+                    f"```json\n{json.dumps(arguments, indent=2, ensure_ascii=False)[:1500]}\n```\n"
+                )
+                yield full_response
+
+                full_response += f"⏳ **Executing {tool_name}...**\n"
+                yield full_response
+
+                t0 = time.time()
+                result = self._execute_tool(tool_name, arguments)
+                elapsed = time.time() - t0
+
+                # Strip the executing indicator
+                full_response = full_response.rsplit(f"⏳ **Executing {tool_name}...**\n", 1)[0]
+
+                if isinstance(result, dict):
+                    result_output = result.get("output", "")
+                    result_status = result.get("status", "unknown")
+                else:
+                    result_output = str(result)
+                    result_status = "unknown"
+
+                # Truncate for display
+                display_output = result_output
+                if len(display_output) > 2000:
+                    display_output = display_output[:2000] + "\n... (truncated for display)"
+
+                badge = "🚫 **BLOCKED**" if result_status == "blocked" else "✅ **Done**"
+                full_response += f"{badge} ({elapsed:.2f}s)\n```\n{display_output}\n```\n"
+                yield full_response
+
+                # Tool result -> message history (keep raw, don't truncate)
+                self.messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result),
+                })
+                self._log("tool_result", tool=tool_name, status=result_status, elapsed=round(elapsed, 3),
+                          output_len=len(result_output) if isinstance(result_output, str) else 0)
+
+            if self.cancel_requested:
+                break
+
+            # Loop again for the next model turn
+            # Force a context trim if we've been going for a while
+            if len(self.messages) > self.max_context_messages * 2:
+                self._trim_conversation_history()
+
+        # Loop exited: max iterations or budget or cancellation
         self.messages.append({"role": "assistant", "content": full_response})
-        
+        self._log("turn_end", reason="max_iterations_or_budget", iterations=self.iteration_count)
         yield full_response
+
