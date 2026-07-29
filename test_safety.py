@@ -255,6 +255,75 @@ def test_docker_module_imports():
         check("sandbox_docker imports", False, f"({e})")
 
 
+def test_image_tools():
+    section("Image Tools")
+    from tools import process_image, download_file, remove_background, image_search, HAS_DDG
+
+    # Create a test image (simple 100x100 white square with a colored dot)
+    from PIL import Image
+    # Write to workspace directly (the tool resolves to workspace)
+    from config import WORKSPACE_DIR
+    test_img_path = os.path.join(WORKSPACE_DIR, "test_image.png")
+    img = Image.new("RGB", (100, 100), color="white")
+    # Draw a red square in the center
+    for x in range(40, 60):
+        for y in range(40, 60):
+            img.putpixel((x, y), (255, 0, 0))
+    img.save(test_img_path)
+
+    # Resize
+    result = process_image(
+        path=test_img_path,
+        output="test_resized.png",
+        resize=(50, 50),
+    )
+    check("process_image resize", result["status"] == "success", f"({result.get('output')})")
+
+    # Make white background transparent
+    result = process_image(
+        path=test_img_path,
+        output="test_transparent.png",
+        make_transparent=True,
+        convert_to="PNG",
+    )
+    check("process_image make_transparent", result["status"] == "success",
+          f"({result.get('output')})")
+
+    # remove_background (will use rembg if installed, else fallback)
+    result = remove_background(path=test_img_path, output="test_nobg.png")
+    check("remove_background", result["status"] == "success", f"({result.get('output')})")
+
+    # Path safety: try to write outside workspace
+    result = process_image(path=test_img_path, output="../etc/evil.png")
+    check("process_image blocked outside workspace", result["status"] == "blocked",
+          f"({result.get('status')})")
+
+    # download_file with bad URL
+    result = download_file(url="not-a-url")
+    check("download_file rejects bad URL", result["status"] == "error",
+          f"({result.get('status')})")
+
+    # Use relative paths in subsequent calls (the tool resolves to workspace)
+    test_img_rel = "test_image.png"
+
+    # image_search (only if DDG available — may rate-limit in CI)
+    if HAS_DDG:
+        result = image_search("Philippines coat of arms", max_results=2)
+        check("image_search returns results or graceful error",
+              result["status"] in ("success", "error"),
+              f"({result.get('status')})")
+    else:
+        skip("image_search", "DDG not installed")
+
+    # Cleanup
+    for f in [test_img_path, "test_resized.png", "test_transparent.png", "test_nobg.png"]:
+        path = os.path.join(os.path.dirname(__file__), "workspace", f)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def main():
     print("\n" + "🛡️" * 30)
     print("  AI Agent - Safety & Functionality Test Suite")
@@ -271,6 +340,7 @@ def main():
     test_new_tools_registered()
     test_docker_module_imports()
     test_docker_fallback()
+    test_image_tools()
 
     print("\n" + "=" * 60)
     total = RESULTS["passed"] + RESULTS["failed"]

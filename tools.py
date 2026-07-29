@@ -501,6 +501,237 @@ def run_python(code: str, use_docker: bool = True) -> dict:
 
 
 # ============================================================
+# IMAGE / FILE TOOLS
+# ============================================================
+
+def download_file(url: str, filename: str = None, max_bytes: int = 50_000_000) -> dict:
+    """
+    Download a file from a URL into the workspace.
+    Used to grab logos, images, PDFs, etc. from the web.
+    """
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return {"status": "error", "output": "URL must start with http:// or https://"}
+    try:
+        # Derive a safe filename
+        if not filename:
+            from urllib.parse import urlparse
+            path = urlparse(url).path
+            filename = os.path.basename(path) or "downloaded_file"
+            # Strip query/fragment residue
+            filename = filename.split("?")[0].split("#")[0]
+        # Sanitize: only allow basename, no path traversal
+        filename = os.path.basename(filename)
+        if not filename:
+            filename = "downloaded_file"
+        dest = guard.validate_path(filename, allow_workspace_only=True)
+
+        with httpx.Client(
+            timeout=60,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; ai-agent/1.0)"},
+        ) as client:
+            with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                # Content-length check (best effort)
+                cl = resp.headers.get("content-length")
+                if cl and int(cl) > max_bytes:
+                    return {"status": "error", "output": f"File too large: {cl} bytes (max {max_bytes})"}
+                with open(dest, "wb") as f:
+                    downloaded = 0
+                    for chunk in resp.iter_bytes(chunk_size=65536):
+                        downloaded += len(chunk)
+                        if downloaded > max_bytes:
+                            f.close()
+                            os.remove(dest)
+                            return {"status": "error", "output": f"File too large (> {max_bytes} bytes)"}
+                        f.write(chunk)
+
+        size = os.path.getsize(dest)
+        try:
+            display = os.path.relpath(dest, WORKSPACE_DIR)
+        except ValueError:
+            display = dest
+        return {
+            "status": "success",
+            "output": f"✅ Downloaded: {display} ({size:,} bytes)\nFrom: {url}",
+            "path": display,
+            "size": size,
+        }
+    except SafetyViolation as e:
+        return {"status": "blocked", "output": str(e), "risk_level": "blocked"}
+    except httpx.HTTPError as e:
+        return {"status": "error", "output": f"HTTP error: {e}"}
+    except Exception as e:
+        return {"status": "error", "output": f"Download error: {e}"}
+
+
+def image_search(query: str, max_results: int = 5) -> dict:
+    """
+    Search the web for images. Uses duckduckgo_search if available.
+    Returns URLs of images matching the query. Then use download_file to grab them.
+    """
+    if not HAS_DDG:
+        return {
+            "status": "error",
+            "output": "duckduckgo-search is not installed. Run: pip install duckduckgo-search",
+        }
+    try:
+        results = []
+        with DDGS() as ddgs:
+            for r in ddgs.images(query, max_results=max_results):
+                title = r.get("title", "")
+                image_url = r.get("image") or r.get("url", "")
+                thumbnail = r.get("thumbnail", "")
+                width = r.get("width", "")
+                height = r.get("height", "")
+                results.append(
+                    f"### {title}\n"
+                    f"Image URL: {image_url}\n"
+                    f"Thumbnail: {thumbnail}\n"
+                    f"Size: {width}x{height}\n"
+                )
+        if not results:
+            results.append("No images found. Try a different query.")
+        return {"status": "success", "output": _truncate("\n".join(results), max_chars=6000)}
+    except Exception as e:
+        return {"status": "error", "output": f"Image search error: {e}"}
+
+
+def process_image(
+    path: str,
+    output: str = None,
+    resize: tuple = None,
+    crop: tuple = None,
+    convert_to: str = None,
+    make_transparent: bool = False,
+) -> dict:
+    """
+    Process an image using Pillow: resize, crop, convert format,
+    or attempt to make a white background transparent.
+
+    Args:
+        path: input image path (within workspace)
+        output: output filename (defaults to overwriting)
+        resize: (width, height) tuple, or None
+        crop: (left, top, right, bottom) tuple, or None
+        convert_to: "PNG" / "JPEG" / "WEBP" / etc., or None
+        make_transparent: if True, convert near-white pixels to transparent
+    """
+    try:
+        from PIL import Image
+
+        resolved = guard.validate_path(path, allow_workspace_only=True, must_exist=True)
+        if not output:
+            output = os.path.basename(resolved)
+        out_path = guard.validate_path(output, allow_workspace_only=True)
+
+        img = Image.open(resolved)
+
+        original_size = img.size
+        original_mode = img.mode
+
+        if crop:
+            img = img.crop(crop)
+        if resize:
+            img = img.resize(resize, Image.LANCZOS)
+        if make_transparent:
+            # Convert near-white to transparent. Useful for cleaning up
+            # logos scraped from the web that have a white background.
+            img = img.convert("RGBA")
+            pixels = img.load()
+            threshold = 240
+            for y in range(img.height):
+                for x in range(img.width):
+                    r, g, b, a = pixels[x, y]
+                    if r >= threshold and g >= threshold and b >= threshold:
+                        pixels[x, y] = (r, g, b, 0)
+        if convert_to:
+            target_format = convert_to.upper()
+            if target_format in ("JPEG", "JPG") and img.mode in ("RGBA", "LA", "P"):
+                # Flatten onto white background for JPEG
+                bg = Image.new("RGB", img.size, (255, 255, 255))
+                bg.paste(img, mask=img.split()[-1])
+                img = bg
+            img.save(out_path, format=target_format)
+        else:
+            img.save(out_path)
+
+        new_size = os.path.getsize(out_path)
+        try:
+            display = os.path.relpath(out_path, WORKSPACE_DIR)
+        except ValueError:
+            display = out_path
+        ops = []
+        if crop: ops.append(f"crop{crop}")
+        if resize: ops.append(f"resize{resize}")
+        if make_transparent: ops.append("transparent-bg")
+        if convert_to: ops.append(f"->{convert_to}")
+        op_str = ", ".join(ops) or "saved"
+        return {
+            "status": "success",
+            "output": (
+                f"✅ Processed: {display}\n"
+                f"Operations: {op_str}\n"
+                f"Original: {original_size[0]}x{original_size[1]} {original_mode}\n"
+                f"New size: {new_size:,} bytes"
+            ),
+            "path": display,
+        }
+    except SafetyViolation as e:
+        return {"status": "blocked", "output": str(e), "risk_level": "blocked"}
+    except ImportError:
+        return {"status": "error", "output": "Pillow not installed. Run: pip install pillow"}
+    except Exception as e:
+        return {"status": "error", "output": f"Image error: {type(e).__name__}: {e}"}
+
+
+def remove_background(path: str, output: str = None) -> dict:
+    """
+    Remove the background from an image, leaving the foreground subject
+    with a transparent background. Uses the `rembg` library if installed,
+    otherwise falls back to a simple white-to-transparent conversion.
+    """
+    try:
+        resolved = guard.validate_path(path, allow_workspace_only=True, must_exist=True)
+        if not output:
+            base, _ = os.path.splitext(os.path.basename(resolved))
+            output = f"{base}_nobg.png"
+        out_path = guard.validate_path(output, allow_workspace_only=True)
+
+        # Try rembg first (uses AI model, much better quality)
+        try:
+            from rembg import remove as rembg_remove
+            from PIL import Image
+            with open(resolved, "rb") as f:
+                input_data = f.read()
+            output_data = rembg_remove(input_data)
+            with open(out_path, "wb") as f:
+                f.write(output_data)
+            try:
+                display = os.path.relpath(out_path, WORKSPACE_DIR)
+            except ValueError:
+                display = out_path
+            return {
+                "status": "success",
+                "output": f"✅ Removed background (using rembg AI): {display} ({os.path.getsize(out_path):,} bytes)",
+                "path": display,
+            }
+        except ImportError:
+            # Fall back to threshold-based transparency (only good for white backgrounds)
+            return process_image(
+                path=path,
+                output=output,
+                make_transparent=True,
+                convert_to="PNG",
+            )
+
+    except SafetyViolation as e:
+        return {"status": "blocked", "output": str(e), "risk_level": "blocked"}
+    except Exception as e:
+        return {"status": "error", "output": f"BG-remove error: {type(e).__name__}: {e}"}
+
+
+# ============================================================
 # TOOL DEFINITIONS (OpenAI function-calling format)
 # ============================================================
 
@@ -677,6 +908,106 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "download_file",
+            "description": (
+                "Download a file from a URL into the workspace. "
+                "Useful for grabbing logos, images, PDFs, etc. from the web. "
+                "After downloading, you can process it with process_image or "
+                "remove_background."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "HTTP/HTTPS URL to download."},
+                    "filename": {
+                        "type": "string",
+                        "description": "Optional output filename (defaults to URL basename).",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "image_search",
+            "description": (
+                "Search the web for images matching a query. Returns URLs. "
+                "Use download_file afterward to save a chosen image to the workspace. "
+                "Best for finding official logos, photos, icons."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to search for."},
+                    "max_results": {"type": "integer", "description": "How many images (default 5)."},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "process_image",
+            "description": (
+                "Process an image: resize, crop, convert format, or make a "
+                "near-white background transparent. Uses Pillow. "
+                "Common usage: resize a downloaded logo to fit in a header."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Input image path (workspace)."},
+                    "output": {"type": "string", "description": "Output filename (default: overwrite)."},
+                    "resize": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Optional (width, height) to resize to.",
+                    },
+                    "crop": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Optional (left, top, right, bottom) crop box.",
+                    },
+                    "convert_to": {
+                        "type": "string",
+                        "description": "Optional output format: PNG, JPEG, WEBP, etc.",
+                    },
+                    "make_transparent": {
+                        "type": "boolean",
+                        "description": "If true, convert near-white pixels to transparent.",
+                        "default": False,
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_background",
+            "description": (
+                "Remove the background from an image, leaving the foreground "
+                "subject with a transparent background. Uses rembg (AI model) "
+                "if installed; falls back to white-to-transparent conversion. "
+                "Saves as PNG."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Input image path (workspace)."},
+                    "output": {"type": "string", "description": "Output filename (default: <name>_nobg.png)."},
+                },
+                "required": ["path"],
+            },
+        },
+    },
 ]
 
 
@@ -690,5 +1021,9 @@ TOOL_FUNCTIONS = {
     "fetch_page": fetch_page,
     "pip_install": pip_install,
     "run_python": run_python,
+    "download_file": download_file,
+    "image_search": image_search,
+    "process_image": process_image,
+    "remove_background": remove_background,
 }
 

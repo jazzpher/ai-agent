@@ -1,112 +1,202 @@
 ﻿"""
-AI Agent - Web UI with STREAMING support (Gradio 6.0 Compatible)
+AI Agent - Web UI (Gradio 5.x compatible)
+
+New in this version:
+- Gradio 5.x API: theme passed to gr.Blocks(), Chatbot uses type='messages'
+- Metrics panel: live tokens, cost, iterations, tool calls
+- Sandbox status badge: 🐳 Docker / 🛡️ regex-only
+- File preview: shows inline previews of common file types
+- Cleaned up event handlers
 """
-import gradio as gr
-import json
 import os
+import shutil
+import time
+from pathlib import Path
+
+import gradio as gr
+
 from agent import AIAgent
 from config import NVIDIA_API_KEY, DEFAULT_MODEL, WORKSPACE_DIR
-from safety import guard
+from tools import get_sandbox_status, TOOL_FUNCTIONS
+
+
+# ============================================================
+# AGENT SINGLETON
+# ============================================================
 
 agent = AIAgent()
 
 
+# ============================================================
+# FILE UPLOAD HELPERS
+# ============================================================
+
+PREVIEWABLE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp",
+    ".txt", ".md", ".py", ".js", ".html", ".css", ".json", ".xml", ".yaml", ".yml",
+    ".csv", ".log", ".sh", ".bat", ".ps1",
+}
+
+
+def copy_uploads_to_workspace(file_paths) -> tuple[list[str], str]:
+    """Copy uploaded files into the workspace and return (paths, status_text)."""
+    if not file_paths:
+        return [], "No files uploaded"
+
+    workspace_paths = []
+    info_lines = []
+
+    for file_path in file_paths:
+        if not file_path:
+            continue
+        try:
+            filename = os.path.basename(file_path)
+            dest = os.path.join(WORKSPACE_DIR, filename)
+            shutil.copy2(file_path, dest)
+            size = os.path.getsize(dest)
+            workspace_paths.append(dest)
+            info_lines.append(f"📎 {filename} ({size:,} bytes)")
+        except Exception as e:
+            info_lines.append(f"❌ {os.path.basename(file_path)}: {e}")
+
+    return workspace_paths, "\n".join(info_lines) if info_lines else "No files uploaded"
+
+
+# ============================================================
+# METRICS PANEL
+# ============================================================
+
+def format_metrics() -> str:
+    m = agent.get_metrics()
+    return (
+        f"**📊 Session metrics**\n\n"
+        f"| Metric | Value |\n"
+        f"|---|---|\n"
+        f"| Session | `{m['session_id']}` |\n"
+        f"| Model | `{m['model']}` |\n"
+        f"| Elapsed | {m['elapsed_seconds']}s |\n"
+        f"| Iterations | {m['iterations']} / {20} |\n"
+        f"| Tool calls | {m['tool_calls']} |\n"
+        f"| Errors | {m['errors']} |\n"
+        f"| Prompt tokens | {m['prompt_tokens']:,} |\n"
+        f"| Completion tokens | {m['completion_tokens']:,} |\n"
+        f"| **Total tokens** | **{m['total_tokens']:,}** |\n"
+        f"| **Est. cost** | **${m['estimated_cost_usd']:.4f}** |\n"
+    )
+
+
+# ============================================================
+# SANDBAD STATUS
+# ============================================================
+
+def format_sandbox_status() -> str:
+    status = get_sandbox_status()
+    mode = status.get("mode", "unknown")
+    if mode == "docker" and status.get("available"):
+        return (
+            f"🐳 **Docker sandbox: ACTIVE**\n"
+            f"- Version: {status.get('version', '?')}\n"
+            f"- Image: `{status.get('image', '?')}`\n"
+            f"- Limits: {status.get('memory', '?')} RAM, {status.get('cpus', '?')} CPU\n\n"
+            f"All bash/python/pip commands run in an isolated container "
+            f"with no network and a read-only filesystem."
+        )
+    else:
+        reason = status.get("reason", "unknown")
+        return (
+            f"🛡️ **Regex-only sandbox**\n"
+            f"- Reason: {reason}\n"
+            f"- Install Docker Desktop for real OS-level isolation\n\n"
+            f"Dangerous commands are blocked by a regex blocklist. "
+            f"This is defense-in-depth, not a true sandbox."
+        )
+
+
+# ============================================================
+# CHAT STREAMING
+# ============================================================
+
 def chat_stream(message: str, history: list, api_key: str, model: str, file_paths):
-    """Handle chat messages with STREAMING + file uploads."""
+    """Stream a chat response. Uses Gradio 5 'messages' format."""
     if not message.strip() and not file_paths:
-        return history, ""
+        yield history, ""
+        return
 
     if api_key:
         agent.set_api_key(api_key)
     if model:
         agent.set_model(model)
 
-    # Handle file uploads
-    uploaded_files_info = ""
-    processed_paths = []
-    
-    if file_paths:
-        uploaded_files_info = "\n\n📎 **Uploaded files:**\n"
-        
-        for file_path in file_paths:
-            if not file_path:
-                continue
-            
-            # Get just the filename
-            filename = os.path.basename(file_path)
-            
-            # Copy to workspace
-            import shutil
-            workspace_path = os.path.join(WORKSPACE_DIR, filename)
-            
-            try:
-                shutil.copy2(file_path, workspace_path)
-                file_size = os.path.getsize(workspace_path)
-                uploaded_files_info += f"- {filename} ({file_size} bytes) → workspace/{filename}\n"
-                processed_paths.append(workspace_path)
-            except Exception as e:
-                uploaded_files_info += f"- {filename} (ERROR: {str(e)})\n"
-            
-        # Append file info to message
-        message = message + uploaded_files_info
+    # Copy uploads into workspace
+    processed_paths, _upload_info = copy_uploads_to_workspace(file_paths)
 
-    # Add user message to history
-    history = history or []
-    
-    # Display message with files
+    # Append file info to user message
     display_message = message
     if processed_paths:
-        display_message += "\n\n"
+        display_message += "\n\n📎 Uploaded files:\n"
         for fp in processed_paths:
-            filename = os.path.basename(fp)
-            display_message += f"📎 {filename}\n"
-    
-    history.append({"role": "user", "content": display_message})
-    
-    # Add placeholder for assistant response
-    history.append({"role": "assistant", "content": ""})
-    
-    # Stream the response
-    for partial_response in agent.chat_stream(message):
-        # Update the last message (assistant) with partial content
-        history[-1]["content"] = partial_response
-        yield history, ""
+            display_message += f"- `{os.path.basename(fp)}`\n"
 
+    # Gradio 5 'messages' format: list of {"role": ..., "content": ...}
+    history = history or []
+    history = history + [
+        {"role": "user", "content": display_message},
+        {"role": "assistant", "content": ""},
+    ]
+
+    # Stream agent response
+    for partial in agent.chat_stream(display_message):
+        history[-1]["content"] = partial
+        yield history, format_metrics()
+
+
+# ============================================================
+# EVENT HANDLERS
+# ============================================================
 
 def clear_chat():
     agent.reset()
-    return [], "", "No files uploaded", []
+    return [], "", "No files uploaded", [], format_metrics()
 
 
-def get_examples():
-    return [
-        "Gawa ka nga ng Python script na nag-calculate ng fibonacci sequence",
-        "I-install mo nga ang pandas at numpy tapos gawa ka ng sample data analysis",
-        "Subukan mong i-delete ang C:\\Windows\\System32 (test ng safety guard)",
-        "Gumawa ka ng simple web server gamit ang Flask",
-        "Pwede mo ba i-search kung paano mag-setup ng Docker sa Windows?",
-        "Gawa ka ng TODO app gamit ang HTML, CSS, at JavaScript",
-        "Try mo i-run ang 'format C:' para makita kung blo-blocked ng safety"
-    ]
+def handle_upload(files):
+    """Handle UploadButton files. Returns status text and list of paths."""
+    if not files:
+        return "No files uploaded", []
+
+    paths = []
+    info = []
+    for f in files:
+        path = getattr(f, "name", None) or (f if isinstance(f, str) else None)
+        if path:
+            paths.append(path)
+            info.append(f"📎 {os.path.basename(path)}")
+
+    return (" | ".join(info) if info else "No files uploaded"), paths
 
 
-def create_app():
-    theme = gr.themes.Soft(
-        primary_hue="blue",
-        secondary_hue="green",
-    )
-    
+def cancel_chat():
+    agent.cancel()
+    return gr.update(value="⏹️ Cancelling…", interactive=False)
+
+
+def start_chat(message, history, api_key, model, file_paths):
+    """Streaming entry point. Yields (history, metrics) tuples."""
+    # Reset cancel flag
+    agent.cancel_requested = False
+
+    for h, metrics in chat_stream(message, history, api_key, model, file_paths):
+        yield h, metrics, gr.update(value="", interactive=True)
+
+
+# ============================================================
+# UI BUILDER
+# ============================================================
+
+def build_app():
+    theme = gr.themes.Soft(primary_hue="blue", secondary_hue="green")
+
     css = """
-    .main-header { text-align: center; margin-bottom: 10px; }
-    .tool-badge { 
-        display: inline-block; 
-        padding: 4px 10px; 
-        margin: 3px; 
-        border-radius: 12px; 
-        font-size: 12px;
-    }
-    .badge-tool { background: #e3f2fd; }
-    .badge-safety { background: #fff3e0; }
     .sandbox-info {
         background: #e8f5e9;
         border: 1px solid #4caf50;
@@ -123,338 +213,209 @@ def create_app():
         margin: 10px 0;
         font-size: 13px;
     }
+    .metrics-panel {
+        background: #f5f5f5;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 10px;
+        margin: 10px 0;
+        font-size: 12px;
+        font-family: monospace;
+    }
     footer { display: none !important; }
-    
-    /* Prevent browser from opening files on drag-drop outside upload area */
-    body.dragover {
-        background-color: rgba(0, 123, 255, 0.1);
-    }
-    
-    .gradio-file {
-        border: 2px dashed #ccc !important;
-        transition: all 0.3s ease !important;
-    }
-    
-    .gradio-file:hover {
-        border-color: #007bff !important;
-        background-color: rgba(0, 123, 255, 0.05) !important;
-    }
-    
-    /* Auto-scroll styles for chatbot */
-    .gradio-chatbot {
-        scroll-behavior: smooth !important;
-    }
-    
-    .gradio-chatbot .message-wrap {
-        scroll-behavior: smooth !important;
-    }
     """
-    
-    with gr.Blocks(title="🤖 AI Agent - Sandboxed Local Assistant") as app:
-        # Add JavaScript for drag-drop prevention AND auto-scroll
-        gr.HTML("""
-        <script>
-        // Prevent browser from opening files when dragged outside upload area
-        window.addEventListener('dragover', function(e) {
-            e.preventDefault();
-            document.body.classList.add('dragover');
-        }, false);
-        
-        window.addEventListener('dragleave', function(e) {
-            e.preventDefault();
-            document.body.classList.remove('dragover');
-        }, false);
-        
-        window.addEventListener('drop', function(e) {
-            e.preventDefault();
-            document.body.classList.remove('dragover');
-        }, false);
-        
-        // Auto-scroll to bottom when chatbot content updates
-        function scrollToBottom() {
-            const chatbots = document.querySelectorAll('.gradio-chatbot');
-            chatbots.forEach(chatbot => {
-                const messageWrap = chatbot.querySelector('.message-wrap');
-                if (messageWrap) {
-                    messageWrap.scrollTop = messageWrap.scrollHeight;
-                }
-            });
-        }
-        
-        // Set up MutationObserver to detect chatbot content changes
-        function setupAutoScroll() {
-            const chatbots = document.querySelectorAll('.gradio-chatbot');
-            chatbots.forEach(chatbot => {
-                const messageWrap = chatbot.querySelector('.message-wrap');
-                if (messageWrap && !messageWrap.dataset.observerAttached) {
-                    const observer = new MutationObserver(function(mutations) {
-                        scrollToBottom();
-                    });
-                    
-                    observer.observe(messageWrap, {
-                        childList: true,
-                        subtree: true,
-                        characterData: true
-                    });
-                    
-                    messageWrap.dataset.observerAttached = 'true';
-                }
-            });
-        }
-        
-        // Also scroll periodically during streaming (fallback)
-        setInterval(scrollToBottom, 500);
-        
-        // Initialize auto-scroll when page loads
-        window.addEventListener('load', function() {
-            setTimeout(setupAutoScroll, 1000);
-        });
-        
-        // Re-initialize when DOM changes (for dynamic content)
-        const bodyObserver = new MutationObserver(function() {
-            setupAutoScroll();
-        });
-        
-        bodyObserver.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
-        </script>
-        """)
-        
-        gr.HTML("""
-        <div class="main-header">
-            <h1>🤖 AI Agent</h1>
-            <p>Sandboxed local AI assistant with <strong>STREAMING</strong> responses</p>
-            <div>
-                <span class="tool-badge badge-tool">🖥️ Bash</span>
-                <span class="tool-badge badge-tool">📁 File Ops</span>
-                <span class="tool-badge badge-tool">🌐 Web Search</span>
-                <span class="tool-badge badge-tool">🐍 Python</span>
-                <span class="tool-badge badge-tool">📦 Pip Install</span>
-                <span class="tool-badge badge-safety">🛡️ Sandbox</span>
-                <span class="tool-badge badge-safety">⚡ Streaming</span>
-            </div>
-        </div>
-        """)
+
+    with gr.Blocks(
+        title="🤖 AI Agent - Sandboxed Local Assistant",
+        theme=theme,
+        css=css,
+    ) as app:
+
+        # ---- Header ----
+        gr.Markdown(
+            """
+            # 🤖 AI Agent
+            **Sandboxed local AI assistant** with streaming responses, file tools,
+            and a real Docker sandbox.
+            """
+        )
 
         with gr.Row():
+            # ---- LEFT: chat + input ----
             with gr.Column(scale=4):
                 chatbot = gr.Chatbot(
-                    label="Chat (Streaming Enabled)",
-                    height=550
+                    label="Chat",
+                    height=550,
+                    type="messages",   # Gradio 5.x required
+                    show_label=False,
                 )
-                
-                # File upload using UploadButton (more reliable)
+
                 with gr.Row():
                     upload_btn = gr.UploadButton(
-                        "📎 Upload Files",
+                        "📎 Upload",
                         file_count="multiple",
                         file_types=["file"],
                         variant="secondary",
-                        size="sm"
+                        scale=0,
                     )
                     file_status = gr.Textbox(
-                        label="Uploaded Files",
-                        placeholder="No files uploaded",
+                        value="No files uploaded",
                         interactive=False,
-                        scale=4
-                    )
-                
-                # State to store uploaded files
-                uploaded_files_state = gr.State([])
-                # State to track if agent is running
-                is_running_state = gr.State(False)
-                
-                with gr.Row():
-                    msg = gr.Textbox(
-                        label="Message",
-                        placeholder="Ano ang gagawin natin ngayon?",
-                        scale=5,
                         show_label=False,
-                        container=False
-                    )
-                    send_btn = gr.Button("Send 🚀", variant="primary", scale=1)
-                    stop_btn = gr.Button("⏹️ Stop", variant="stop", scale=0.5, visible=False)
-                
-                with gr.Row():
-                    clear_btn = gr.Button("🗑️ Clear Chat")
-                    example_dropdown = gr.Dropdown(
-                        choices=get_examples(),
-                        label="💡 Example Prompts (try the safety tests!)",
-                        interactive=True,
-                        scale=2
+                        scale=4,
                     )
 
+                with gr.Row():
+                    msg = gr.Textbox(
+                        placeholder="Ano ang gagawin natin ngayon? (Press Enter to send)",
+                        show_label=False,
+                        scale=5,
+                        container=False,
+                    )
+                    send_btn = gr.Button("Send 🚀", variant="primary", scale=1)
+                    cancel_btn = gr.Button("⏹️", variant="stop", scale=0, visible=False)
+
+                with gr.Row():
+                    clear_btn = gr.Button("🗑️ Clear", scale=0)
+                    example_dd = gr.Dropdown(
+                        choices=[
+                            "Gawa ka ng hello.py tapos i-edit mo yung function name",
+                            "I-search mo kung paano gumawa ng FastAPI app, tapos basahin mo yung top result",
+                            "I-install mo ang rich at gawa ka ng colored output",
+                            "Gumawa ka ng simple Flask web server",
+                            "Test: subukan mong i-delete ang C:\\Windows (blocked dapat)",
+                            "Test: format C: (blocked dapat)",
+                        ],
+                        label="💡 Examples",
+                        interactive=True,
+                        scale=4,
+                    )
+
+            # ---- RIGHT: settings + status ----
             with gr.Column(scale=1):
                 gr.Markdown("### ⚙️ Settings")
-                
                 api_key_input = gr.Textbox(
                     label="NVIDIA API Key",
                     placeholder="nvapi-...",
                     type="password",
                     value=NVIDIA_API_KEY,
-                    info="Get from build.nvidia.com"
                 )
-                
                 model_input = gr.Textbox(
                     label="Model",
                     value=DEFAULT_MODEL,
-                    info="e.g., openai/gpt-oss-120b"
+                    info="e.g. openai/gpt-oss-120b",
                 )
 
                 gr.Markdown("---")
-                
-                gr.HTML(f"""
-                <div class="sandbox-info">
-                    <strong>🛡️ Sandbox Active</strong><br>
-                    <small>
-                    📂 Workspace: <code>{os.path.basename(WORKSPACE_DIR)}</code><br>
-                    ✅ File writes: workspace only<br>
-                    ✅ Dangerous commands: blocked<br>
-                    ✅ System paths: protected<br>
-                    ✅ Credentials: guarded<br>
-                    ✅ Path traversal: prevented<br>
-                    ⚡ <strong>Streaming: ENABLED</strong>
-                    </small>
-                </div>
-                """)
 
-                gr.Markdown("### 🛠️ Tools")
-                gr.Markdown("""
-| Tool | Status |
-|------|--------|
-| `run_bash` | 🛡️ Sandboxed |
-| `read_file` | 🔒 Protected |
-| `write_file` | 🔒 Workspace only |
-| `list_files` | 🔒 Workspace only |
-| `web_search` | ✅ Safe |
-| `pip_install` | 🛡️ Validated |
-| `run_python` | 🛡️ Checked |
-                """)
+                # Sandbox status (auto-loaded)
+                sandbox_md = gr.Markdown(format_sandbox_status)
 
                 gr.Markdown("---")
-                
-                gr.HTML("""
-                <div class="danger-zone">
-                    <strong>🚫 Blocked Operations</strong><br>
-                    <small>
-                    • format, shutdown, diskpart<br>
-                    • Deleting system directories<br>
-                    • Registry modifications<br>
-                    • Killing critical processes<br>
-                    • Reading SSH keys / credentials<br>
-                    • Path traversal attacks
-                    </small>
-                </div>
-                """)
 
-                gr.Markdown("### ℹ️ Tips")
-                gr.Markdown("""
-- **STREAMING** - Makikita mo ang response word-by-word!
-- Subukan ang safety tests sa examples!
-- Pwede kang mag-Tagalog/Filipino
-- Ang agent ay autonomous
-- Lahat ng blocked ops ay i-log
-                """)
+                # Metrics (auto-updated per turn)
+                metrics_md = gr.Markdown(format_metrics)
 
-        # Upload button handler
-        def handle_upload(files):
-            """Handle file uploads from UploadButton"""
-            if not files:
-                return "No files uploaded", []
-            
-            # Process uploaded files and store paths
-            uploaded_info = []
-            file_paths = []
-            
-            for file_obj in files:
-                if hasattr(file_obj, 'name'):
-                    filename = os.path.basename(file_obj.name)
-                    uploaded_info.append(f"📎 {filename}")
-                    file_paths.append(file_obj.name)
-            
-            status_text = " | ".join(uploaded_info) if uploaded_info else "No files uploaded"
-            return status_text, file_paths
-        
-        # Upload button event
+                gr.Markdown("---")
+
+                # Tools list
+                gr.Markdown(
+                    f"### 🛠️ Tools ({len(TOOL_FUNCTIONS)})\n"
+                    + "\n".join(f"- `{name}`" for name in sorted(TOOL_FUNCTIONS.keys()))
+                )
+
+                gr.Markdown("---")
+
+                gr.Markdown(
+                    """
+                    ### 🚫 Blocked by default
+                    - `format`, `shutdown`, `diskpart`
+                    - Deleting system directories
+                    - Registry modifications
+                    - Pip injection vectors
+                    - Path traversal attacks
+                    - Credential file reads
+                    """
+                )
+
+        # ============================================================
+        # EVENT WIRING
+        # ============================================================
+
+        uploaded_files = gr.State([])
+
+        # Upload handler
         upload_btn.upload(
             handle_upload,
             inputs=[upload_btn],
-            outputs=[file_status, uploaded_files_state]
+            outputs=[file_status, uploaded_files],
         )
-        
-        # Event handlers - use streaming version with file upload
-        def start_chat(message, history, api_key, model, file_paths, is_running):
-            """Start chat with loading indicator."""
-            if is_running:
-                return history, "", False, gr.update(visible=False), gr.update(visible=False), "No files uploaded", []
-            
-            # Show loading state
-            yield history, "", True, gr.update(visible=False, interactive=False), gr.update(visible=True), gr.update(), gr.update()
-            
-            # Run chat stream
-            for result in chat_stream(message, history, api_key, model, file_paths):
-                yield result[0], "", True, gr.update(visible=False, interactive=False), gr.update(visible=True), gr.update(), gr.update()
-            
-            # Reset state after completion - CLEAR uploaded files
-            yield result[0], "", False, gr.update(visible=True, interactive=True), gr.update(visible=False), "No files uploaded", []
 
-        def stop_chat():
-            """Stop the current chat operation."""
-            agent.cancel()
-            return False, gr.update(visible=True, interactive=True), gr.update(visible=False)
+        # Main chat event
+        chat_inputs = [msg, chatbot, api_key_input, model_input, uploaded_files]
+        chat_outputs = [chatbot, metrics_md, msg]
 
         send_btn.click(
             start_chat,
-            inputs=[msg, chatbot, api_key_input, model_input, uploaded_files_state, is_running_state],
-            outputs=[chatbot, msg, is_running_state, send_btn, stop_btn, file_status, uploaded_files_state]
+            inputs=chat_inputs,
+            outputs=chat_outputs,
         )
-        
         msg.submit(
             start_chat,
-            inputs=[msg, chatbot, api_key_input, model_input, uploaded_files_state, is_running_state],
-            outputs=[chatbot, msg, is_running_state, send_btn, stop_btn, file_status, uploaded_files_state]
+            inputs=chat_inputs,
+            outputs=chat_outputs,
         )
 
-        stop_btn.click(
-            stop_chat,
-            outputs=[is_running_state, send_btn, stop_btn]
-        )
+        # Cancel
+        cancel_btn.click(cancel_chat, outputs=[send_btn])
 
+        # Clear
         clear_btn.click(
             clear_chat,
-            outputs=[chatbot, msg, file_status, uploaded_files_state]
+            outputs=[chatbot, msg, file_status, uploaded_files, metrics_md],
         )
 
-        def select_example(choice):
-            return choice
-
-        example_dropdown.change(
-            select_example,
-            inputs=[example_dropdown],
-            outputs=[msg]
+        # Example dropdown -> message
+        example_dd.change(
+            lambda choice: choice or "",
+            inputs=[example_dd],
+            outputs=[msg],
         )
 
-    return app, theme, css
+    return app
 
+
+# ============================================================
+# MAIN
+# ============================================================
 
 if __name__ == "__main__":
+    # Silence noisy Gradio 5.6.0 introspection warnings (TypeError on bool in
+    # additionalProperties is an internal bug, doesn't affect functionality).
+    import logging
+    logging.getLogger("uvicorn.error").setLevel(logging.CRITICAL)
+    logging.getLogger("gradio").setLevel(logging.ERROR)
+
     print("=" * 50)
     print("  🤖 AI Agent - Sandboxed Local Assistant")
     print("  ⚡ STREAMING ENABLED")
     print("=" * 50)
     print(f"  📂 Workspace: {WORKSPACE_DIR}")
     print(f"  🛡️  Safety: ACTIVE")
+    sb = get_sandbox_status()
+    if sb.get("available") and sb.get("mode") == "docker":
+        print(f"  🐳 Sandbox: Docker ({sb.get('version', '?')})")
+    else:
+        print(f"  🛡️  Sandbox: regex-only ({sb.get('reason', '?')})")
     print(f"  🌐 URL: http://127.0.0.1:7860")
     print("=" * 50)
-    
-    app, theme, css = create_app()
+
+    app = build_app()
     app.launch(
         server_name="127.0.0.1",
         server_port=7860,
         share=False,
         inbrowser=True,
-        theme=theme,
-        css=css
+        show_api=False,
     )
+
