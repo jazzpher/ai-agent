@@ -409,6 +409,128 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
             return {"status": "error", "output": f"Tool raised: {type(e).__name__}: {e}"}
 
     # ===========================================================
+    # AGENTIC LOOP — self-correction after major actions
+    # ===========================================================
+
+    _EVALUATE_SYSTEM = """You are a senior reviewer. The agent just took an action toward the user's goal. Your job is to evaluate whether the action was successful and worth keeping, OR whether it needs improvement.
+
+# OUTPUT FORMAT (use EXACTLY one of these three)
+
+If the action is **good enough** to proceed:
+```
+KEEP
+```
+
+If the action **needs improvement** (or a follow-up fix):
+```
+FIX
+Issue: <what's wrong or missing>
+Fix: <concrete correction to make next>
+```
+
+If the action reveals the agent is **off track entirely**:
+```
+REPLAN
+Reason: <why the current approach is wrong>
+New direction: <what to do instead>
+```
+
+# RULES
+- Be practical. Don't nitpick minor formatting; only flag real issues.
+- "Issue" should be specific and actionable, not vague.
+- "Fix" should be a single concrete next step, not a full re-plan.
+- "REPLAN" is rare — only when the fundamental approach is wrong.
+- Don't propose improvements the user didn't ask for. Stay focused on the goal.
+- Match the user's language."""
+
+    def _evaluate_action(self, client, goal: str, action_summary: str, result_text: str) -> str:
+        """
+        After a major action, ask the LLM to evaluate if the action was good.
+        Returns one of: "KEEP", "FIX\n...", or "REPLAN\n..."
+        """
+        eval_messages = [
+            {"role": "system", "content": self._EVALUATE_SYSTEM},
+            {"role": "user", "content": (
+                f"**Goal:** {goal}\n\n"
+                f"**Action just taken:** {action_summary}\n\n"
+                f"**Result / output:**\n```\n{result_text[:2000]}\n```\n\n"
+                f"Evaluate the action. Is it good enough to proceed, or does it need a fix?"
+            )},
+        ]
+        supports_reasoning = _model_supports_reasoning(self.model)
+        kwargs = dict(
+            model=self.model,
+            messages=eval_messages,
+            temperature=0.1,  # very low for deterministic review
+            max_tokens=400,
+            stream=False,
+        )
+        if supports_reasoning:
+            kwargs["extra_body"] = {
+                "chat_template_kwargs": {"reasoning_effort": "medium"}
+            }
+        try:
+            resp = client.chat.completions.create(**kwargs)
+            evaluation = (resp.choices[0].message.content or "").strip()
+            if resp.usage:
+                self.total_prompt_tokens += resp.usage.prompt_tokens or 0
+                self.total_completion_tokens += resp.usage.completion_tokens or 0
+                self.total_cost_usd += _estimate_cost(
+                    self.model,
+                    resp.usage.prompt_tokens or 0,
+                    resp.usage.completion_tokens or 0,
+                )
+            self._log("evaluate", verdict=evaluation.splitlines()[0] if evaluation else "empty")
+            return evaluation
+        except Exception as e:
+            self._log("evaluate_failed", error=str(e))
+            return "KEEP"  # don't block on evaluation failures
+
+    def _should_analyze(self, user_message: str, uploaded_files_info: str) -> bool:
+        """
+        Decide whether the analyze pass is worth the cost.
+
+        Run when:
+        - Message contains imperative action verbs (make, build, fix, etc.)
+        - Multi-sentence or has "and"/"then" suggests multi-step
+        - Files were uploaded
+        - Message is long
+
+        Skip when:
+        - Very short message + no uploads + no action verbs (likely a quick question)
+        """
+        msg = user_message.strip()
+        msg_lower = msg.lower()
+
+        # Always analyze when files are uploaded (need to look at them first)
+        if uploaded_files_info:
+            return True
+
+        # Action keywords that warrant upfront planning
+        action_keywords = (
+            "build", "create", "make ", "make.", "fix", "improve", "rewrite",
+            "design", "implement", "convert", "transform", "edit",
+            "search", "find ", "look up", "download", "install",
+            "analyze", "extract", "summarize", "translate", "format",
+            "update", "add ", "remove", "delete", "modify", "change",
+            "refactor", "gawing", "gawa",
+            "ayusin", "hanapin", "i-download", "i-install", "i-fix",
+        )
+        if any(kw in msg_lower for kw in action_keywords):
+            return True
+
+        # Multi-sentence or has "and"/"then" suggests multi-step
+        if len(msg) > 120 or " and " in msg_lower or " then " in msg_lower:
+            return True
+
+        # If it ends with "?" and is short, likely a question — skip
+        if msg.endswith("?") and len(msg) < 80:
+            return False
+
+        # Default: skip for very short messages without action verbs
+        return len(msg) >= 60
+
+    # ===========================================================
     # PASS 1: ANALYZE (no tools, structured output)
     # ===========================================================
 
@@ -494,14 +616,12 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
             return analysis.strip()
         except Exception as e:
             self._log("analyze_failed", error=str(e))
-            # Fall back to a minimal analysis so the agent can still proceed
             return (
                 f"**Restate:** {user_message[:200]}\n\n"
-                f"**Goal:** <the user will provide more context if needed>\n\n"
+                f"**Goal:** Complete the user's request\n\n"
                 f"**Plan:**\n1. Examine the request and any provided files\n"
                 f"2. Proceed step by step using available tools\n"
-                f"3. Verify and report\n\n"
-                f"**Success criteria:** Output matches the user's request."
+                f"3. Verify and report"
             )
 
     def _format_analysis_for_user(self, analysis: str) -> str:
@@ -511,7 +631,7 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
         return f"📋 **Task analysis:**\n\n{analysis}\n\n---\n"
 
     # ===========================================================
-    # PASS 2: ACT
+    # PASS 2: ACT (with iterative self-evaluation)
     # ===========================================================
 
     def chat_stream(self, user_message: str, uploaded_files_info: str = ""):
@@ -535,32 +655,30 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
         self._log("user_message", content_len=len(user_message), has_uploads=bool(uploaded_files_info))
         self._load_memory()
 
-        # ---- PASS 1: ANALYZE (no tools) ----
-        # Always analyze, even for trivial tasks. The analysis is short and
-        # forces the model to commit to an interpretation before acting.
-        analysis_thinking_msg = "\n\n💭 Analyzing your request…\n\n"
-        full_response += analysis_thinking_msg
-        yield full_response
+        # ---- CONDITIONAL PASS 1: ANALYZE (no tools) ----
+        # Only run for non-trivial tasks. The analysis is short but adds latency,
+        # so we skip it for short questions.
+        if self._should_analyze(user_message, uploaded_files_info):
+            analysis_thinking_msg = "\n\n💭 Analyzing your request…\n\n"
+            full_response += analysis_thinking_msg
+            yield full_response
 
-        analysis = self._analyze_task(client, user_message, uploaded_files_info)
+            analysis = self._analyze_task(client, user_message, uploaded_files_info)
+            full_response = full_response.replace(
+                analysis_thinking_msg, self._format_analysis_for_user(analysis)
+            )
+            yield full_response
 
-        # Replace the "analyzing" message with the formatted analysis
-        full_response = full_response.replace(
-            analysis_thinking_msg, self._format_analysis_for_user(analysis)
-        )
-        yield full_response
+            # Inject the analysis into the main message stream as a hint
+            augmented_user_message = (
+                user_message
+                + "\n\n---\n\n# PRE-ANALYSIS (already done — do not re-analyze, just execute):\n\n"
+                + analysis
+            )
+            self.messages[-1] = {"role": "user", "content": augmented_user_message}
 
-        # Inject the analysis into the main message stream as an extra
-        # "user" hint, so the action model knows what's already been decided.
-        # We don't add it to self.messages to keep the conversation clean.
-        # Instead we wrap the original user message with the analysis.
-        augmented_user_message = (
-            user_message
-            + "\n\n---\n\n# PRE-ANALYSIS (already done — do not re-analyze, just execute):\n\n"
-            + analysis
-        )
-        # Replace the user message we just appended with the augmented one
-        self.messages[-1] = {"role": "user", "content": augmented_user_message}
+        # Track the current goal for self-evaluation
+        self._current_goal = user_message[:200]
 
         while self.iteration_count < MAX_ITERATIONS:
             # Wall-clock budget
@@ -769,6 +887,92 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
                     elapsed=round(elapsed, 3),
                     output_len=len(result.get("output", "")) if isinstance(result, dict) else 0,
                 )
+
+            # ---- SELF-EVALUATION (agentic loop) ----
+            # After each batch of tool calls, ask: "did this work? need a fix?"
+            # This is what Arena Agent Mode does — self-correcting loop.
+            # Only run for write/edit/run_python actions (not reads/searches).
+            action_tool_names = [tc["function"]["name"] for tc in tool_calls]
+            producing_actions = {"write_file", "edit_file", "run_python", "run_bash", "pip_install", "process_image", "remove_background"}
+            should_evaluate = any(n in producing_actions for n in action_tool_names)
+            if should_evaluate and not self.cancel_requested:
+                # Collect what was just done
+                last_results = []
+                for tc, args in zip(tool_calls, args_compact):
+                    # find the corresponding tool message we just appended
+                    pass
+                # Reconstruct: use the last N tool messages
+                recent_tool_msgs = [
+                    m for m in self.messages
+                    if m.get("role") == "tool"
+                ][-len(tool_calls):]
+
+                action_summary = ", ".join(
+                    f"`{n}({', '.join(f'{k}={str(v)[:50]}' for k, v in zip(a.keys(), a.values()))})`"
+                    for n, a in zip(action_tool_names, args_compact)
+                )
+                result_text = "\n\n".join(
+                    m.get("content", "")[:1500] for m in recent_tool_msgs
+                )
+
+                eval_msg = "\n\n🔍 **Self-check…**\n"
+                full_response += eval_msg
+                yield full_response
+
+                evaluation = self._evaluate_action(
+                    client, self._current_goal, action_summary, result_text
+                )
+                first_line = evaluation.splitlines()[0].strip() if evaluation else "KEEP"
+
+                if first_line == "KEEP":
+                    full_response += "✅ Looks good. Moving on.\n"
+                    self._log("eval_keep")
+                elif first_line == "REPLAN":
+                    # Major change: inject a new user message with the replan
+                    replan_body = "\n".join(evaluation.splitlines()[1:]).strip()
+                    full_response += f"🔄 Re-planning: {replan_body[:200]}\n"
+                    self._log("eval_replan", body=replan_body[:200])
+                    self.messages.append({
+                        "role": "user",
+                        "content": (
+                            f"[Self-evaluation feedback — major correction needed]\n\n"
+                            f"{replan_body}\n\n"
+                            f"Adjust your approach accordingly on the next turn. "
+                            f"Don't repeat the failed approach."
+                        ),
+                    })
+                elif first_line == "FIX":
+                    fix_body = "\n".join(evaluation.splitlines()[1:]).strip()
+                    # Parse out the Issue and Fix lines
+                    issue = ""
+                    fix = ""
+                    for line in fix_body.splitlines():
+                        if line.lower().startswith("issue:"):
+                            issue = line.split(":", 1)[1].strip()
+                        elif line.lower().startswith("fix:"):
+                            fix = line.split(":", 1)[1].strip()
+                    full_response += f"🛠️ Needs improvement: {issue[:200]}\n"
+                    if fix:
+                        full_response += f"   → {fix[:200]}\n"
+                    self._log("eval_fix", issue=issue[:200], fix=fix[:200])
+                    if fix:
+                        # Inject a focused correction
+                        self.messages.append({
+                            "role": "user",
+                            "content": (
+                                f"[Self-evaluation feedback — small fix needed]\n\n"
+                                f"Issue: {issue}\n\n"
+                                f"Suggested fix: {fix}\n\n"
+                                f"Apply this correction and continue. Don't re-do the whole task — just the specific fix."
+                            ),
+                        })
+                    # else: just a heads-up, continue normally
+                else:
+                    # Unrecognized format, treat as KEEP
+                    full_response += "✅ (could not parse evaluation)\n"
+                    self._log("eval_unknown", first=first_line[:50])
+
+                yield full_response
 
             # Thin rule after the action block
             full_response += "\n---\n\n"
