@@ -175,18 +175,78 @@ def handle_upload(files):
     return (" | ".join(info) if info else "No files uploaded"), paths
 
 
-def cancel_chat():
+def stop_chat():
+    """User clicked the stop button. Cancel the running agent and revert UI."""
     agent.cancel()
-    return gr.update(value="⏹️ Cancelling…", interactive=False)
+    return gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False, value="⏹️")
 
 
 def start_chat(message, history, api_key, model, file_paths):
-    """Streaming entry point. Yields (history, metrics) tuples."""
+    """
+    Streaming entry point. Yields (history, metrics, send_btn, stop_btn, file_status, uploaded_files).
+
+    Send ↔ Stop button toggle:
+    - On entry: swap Send → Stop (hide Send, show Stop with red color)
+    - During streaming: keep Stop visible
+    - On exit: restore Send (show Send, hide Stop) AND clear uploaded files
+
+    File upload behavior:
+    - Files uploaded before this turn are attached and used
+    - After this turn, the uploaded files state and status are cleared
+    - The actual files in the workspace remain (so the agent can still reference them)
+    - To re-attach the same file, the user must re-upload it
+    """
+    # Preserved state: keep the file_status / uploaded_files as-is during the
+    # early "nothing to do" path
+    if not message.strip() and not file_paths:
+        yield history or [], format_metrics(), gr.update(), gr.update(), gr.update(), gr.update()
+        return
+
     # Reset cancel flag
     agent.cancel_requested = False
 
-    for h, metrics in chat_stream(message, history, api_key, model, file_paths):
-        yield h, metrics, gr.update(value="", interactive=True)
+    # Snapshot of "current" file status so we can re-emit it during streaming
+    cur_status = (
+        "📎 " + ", ".join(os.path.basename(p) for p in file_paths)
+        if file_paths
+        else "No files uploaded"
+    )
+
+    # ---- Phase 1: Enter "running" mode (swap Send → Stop) ----
+    send_state = gr.update(visible=False, interactive=False)
+    stop_state = gr.update(visible=True, interactive=True, variant="stop", value="⏹️ Stop")
+    yield (
+        history or [],
+        format_metrics(),
+        send_state,
+        stop_state,
+        cur_status,
+        list(file_paths or []),
+    )
+
+    # ---- Phase 2: Run the stream (keep Stop visible) ----
+    try:
+        for h, metrics in chat_stream(message, history, api_key, model, file_paths):
+            yield h, metrics, send_state, stop_state, cur_status, list(file_paths or [])
+    except Exception as e:
+        # Surface the error in the metrics panel so the user can see it
+        err = f"❌ {type(e).__name__}: {e}"
+        if history:
+            history.append({"role": "assistant", "content": err})
+        else:
+            history = [{"role": "assistant", "content": err}]
+        yield history, err, send_state, stop_state, cur_status, list(file_paths or [])
+    finally:
+        # ---- Phase 3: Exit "running" mode ----
+        # Restore buttons AND clear uploaded files (so the next prompt starts clean)
+        yield (
+            history if history else [],
+            gr.update(),       # keep metrics as-is
+            gr.update(visible=True, interactive=True),     # show Send
+            gr.update(visible=False, interactive=False, value="⏹️"),  # hide Stop
+            gr.update(value="No files uploaded"),  # clear file_status text
+            [],                                     # clear uploaded_files state
+        )
 
 
 # ============================================================
@@ -274,7 +334,7 @@ def build_app():
                         container=False,
                     )
                     send_btn = gr.Button("Send 🚀", variant="primary", scale=1)
-                    cancel_btn = gr.Button("⏹️", variant="stop", scale=0, visible=False)
+                    stop_btn = gr.Button("⏹️ Stop", variant="stop", scale=1, visible=False)
 
                 with gr.Row():
                     clear_btn = gr.Button("🗑️ Clear", scale=0)
@@ -354,7 +414,9 @@ def build_app():
 
         # Main chat event
         chat_inputs = [msg, chatbot, api_key_input, model_input, uploaded_files]
-        chat_outputs = [chatbot, metrics_md, msg]
+        # Outputs: chatbot (history), metrics, send_btn, stop_btn,
+        #          file_status, uploaded_files (so we can clear on exit)
+        chat_outputs = [chatbot, metrics_md, send_btn, stop_btn, file_status, uploaded_files]
 
         send_btn.click(
             start_chat,
@@ -367,8 +429,11 @@ def build_app():
             outputs=chat_outputs,
         )
 
-        # Cancel
-        cancel_btn.click(cancel_chat, outputs=[send_btn])
+        # Stop
+        stop_btn.click(
+            stop_chat,
+            outputs=[send_btn, stop_btn],
+        )
 
         # Clear
         clear_btn.click(
