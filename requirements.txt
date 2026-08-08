@@ -16,6 +16,6 @@ pdfplumber==0.11.4
 pandas==2.2.3
 beautifulsoup4==4.12.3
 # rembg for AI-based background removal (optional; falls back to threshold)
-rembg==2.0.59
+rembg>=2.0.59
 # Pinned: gradio 5.x still uses HfFolder which was removed in huggingface_hub 1.0+
 huggingface_hub<1
