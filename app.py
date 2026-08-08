@@ -394,15 +394,14 @@ def build_app():
 
                 gr.Markdown("---")
 
-                # Sandbox status (auto-loaded)
+                # Sandbox status (updated via chat events, not auto-refresh)
                 sandbox_md = gr.Markdown(
                     lambda: format_sandbox_status(AIAgent()),
-                    every=30,  # refresh every 30s
                 )
 
                 gr.Markdown("---")
 
-                # Metrics (auto-updated per turn)
+                # Metrics (updated via chat events)
                 metrics_md = gr.Markdown(lambda: format_metrics(AIAgent()))
 
                 gr.Markdown("---")

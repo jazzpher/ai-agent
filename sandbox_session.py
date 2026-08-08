@@ -59,9 +59,6 @@ class SessionSandbox:
 
         self._initialized = True
 
-        # Register cleanup on process exit
-        atexit.register(self.cleanup)
-
     # ================================================================
     # DOCKER MODE: Long-lived container
     # ================================================================
@@ -260,12 +257,15 @@ class SessionSandbox:
         self._touch()
         with self._lock:
             if self.mode == "docker":
-                # Write code to temp file to avoid shell escaping issues
-                escaped = code.replace("'", "'\\''")
-                return self._docker_exec(
-                    f"python -c '{escaped}'",
-                    timeout,
+                # Write code to a temp file inside the container to avoid
+                # shell escaping issues with python -c '...'
+                import base64
+                encoded = base64.b64encode(code.encode("utf-8")).decode("ascii")
+                cmd = (
+                    f"echo '{encoded}' | base64 -d > /tmp/_agent_code.py && "
+                    f"python /tmp/_agent_code.py"
                 )
+                return self._docker_exec(cmd, timeout)
             else:
                 return self._host_python(code, timeout)
 
@@ -288,17 +288,19 @@ class SessionSandbox:
 
     def get_installed_packages(self) -> list[str]:
         """Return list of packages installed in this session."""
-        return sorted(self._installed_packages)
+        with self._lock:
+            return sorted(self._installed_packages)
 
     def get_status(self) -> dict:
         """Return sandbox status for the UI."""
-        return {
-            "mode": self.mode,
-            "session_id": self.session_id,
-            "packages_installed": sorted(self._installed_packages),
-            "uptime_seconds": round(time.time() - self._created_at, 1),
-            "last_active": round(time.time() - self._last_active, 1),
-        }
+        with self._lock:
+            return {
+                "mode": self.mode,
+                "session_id": self.session_id,
+                "packages_installed": sorted(self._installed_packages),
+                "uptime_seconds": round(time.time() - self._created_at, 1),
+                "last_active": round(time.time() - self._last_active, 1),
+            }
 
     # ================================================================
     # HOST EXECUTION (via venv)
@@ -416,7 +418,13 @@ class SessionManager:
 
         with self._lock:
             if session_id not in self._sessions:
-                self._sessions[session_id] = SessionSandbox(session_id)
+                try:
+                    self._sessions[session_id] = SessionSandbox(session_id)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to create sandbox: {e}\n"
+                        f"Try: python -m venv --help to check if venv is available."
+                    )
             return self._sessions[session_id]
 
     def destroy(self, session_id: str):
@@ -456,3 +464,6 @@ class SessionManager:
 
 # Global singleton
 session_manager = SessionManager()
+
+# Register cleanup on process exit (once, not per-session)
+atexit.register(session_manager.destroy_all)

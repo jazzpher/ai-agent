@@ -256,30 +256,31 @@ def _view_image(path: str, ext: str, file_size: int) -> dict:
 def _view_pdf(path: str, file_size: int, session_id: str = None) -> dict:
     """Extract text from PDF using the session sandbox."""
     sandbox = session_manager.get_or_create(session_id)
-    code = (
-        "import sys\n"
-        "try:\n"
-        "    import pdfplumber\n"
-        "    with pdfplumber.open(sys.argv[1]) as pdf:\n"
-        f"        pages = pdf.pages[:{20}]\n"
-        "        for i, page in enumerate(pages):\n"
-        "            text = page.extract_text() or ''\n"
-        "            print(f'--- Page {i+1} ---')\n"
-        "            print(text)\n"
-        "            print()\n"
-        "except ImportError:\n"
-        "    try:\n"
-        "        from PyPDF2 import PdfReader\n"
-        "        reader = PdfReader(sys.argv[1])\n"
-        f"        for i, page in enumerate(reader.pages[:{20}]):\n"
-        "            text = page.extract_text() or ''\n"
-        "            print(f'--- Page {i+1} ---')\n"
-        "            print(text)\n"
-        "            print()\n"
-        "    except Exception as e:\n"
-        "        print(f'Error: {e}')\n"
-    )
-    result = sandbox.run_python(f"import sys; exec(open('/dev/null').read())\n" + code.replace("sys.argv[1]", f"'{path}'"))
+    safe_path = repr(path)
+    code = f"""
+import sys
+try:
+    import pdfplumber
+    with pdfplumber.open({safe_path}) as pdf:
+        pages = pdf.pages[:20]
+        for i, page in enumerate(pages):
+            text = page.extract_text() or ''
+            print(f'--- Page {{i+1}} ---')
+            print(text)
+            print()
+except ImportError:
+    try:
+        from PyPDF2 import PdfReader
+        reader = PdfReader({safe_path})
+        for i, page in enumerate(reader.pages[:20]):
+            text = page.extract_text() or ''
+            print(f'--- Page {{i+1}} ---')
+            print(text)
+            print()
+    except Exception as e:
+        print(f'Error: {{e}}')
+"""
+    result = sandbox.run_python(code)
     result["file_type"] = "pdf"
     result["path"] = path
     result["file_size"] = file_size
@@ -290,14 +291,13 @@ def _view_pdf(path: str, file_size: int, session_id: str = None) -> dict:
 def _view_docx(path: str, file_size: int, session_id: str = None) -> dict:
     """Extract text from DOCX using the session sandbox."""
     sandbox = session_manager.get_or_create(session_id)
+    safe_path = repr(path)
     code = f"""
-import os
 try:
     from docx import Document
-    doc = Document(r'{path}')
+    doc = Document({safe_path})
     for para in doc.paragraphs:
         print(para.text)
-    # Also extract tables
     for i, table in enumerate(doc.tables):
         print(f'\\n--- Table {{i+1}} ---')
         for row in table.rows:
@@ -316,10 +316,11 @@ except Exception as e:
 def _view_pptx(path: str, file_size: int, session_id: str = None) -> dict:
     """Extract text from PPTX using the session sandbox."""
     sandbox = session_manager.get_or_create(session_id)
+    safe_path = repr(path)
     code = f"""
 try:
     from pptx import Presentation
-    prs = Presentation(r'{path}')
+    prs = Presentation({safe_path})
     for i, slide in enumerate(prs.slides):
         print(f'--- Slide {{i+1}} ---')
         for shape in slide.shapes:
@@ -340,15 +341,16 @@ except Exception as e:
 def _view_excel(path: str, file_size: int, session_id: str = None) -> dict:
     """Extract data from Excel using the session sandbox."""
     sandbox = session_manager.get_or_create(session_id)
+    safe_path = repr(path)
     code = f"""
 try:
     import openpyxl
-    wb = openpyxl.load_workbook(r'{path}', read_only=True, data_only=True)
+    wb = openpyxl.load_workbook({safe_path}, read_only=True, data_only=True)
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
         print(f'--- Sheet: {{sheet_name}} ---')
         for i, row in enumerate(ws.iter_rows(values_only=True)):
-            if i >= 50:  # Limit to 50 rows
+            if i >= 50:
                 print(f'... ({{ws.max_row - 50}} more rows)')
                 break
             print(' | '.join(str(cell) if cell is not None else '' for cell in row))

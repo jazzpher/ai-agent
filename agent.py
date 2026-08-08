@@ -191,7 +191,7 @@ class AIAgent:
                 f"{self._memory_text}\n"
             )
 
-        return f"""You are an expert AI assistant with sandboxed tools on the user's Windows computer. You are deliberate, careful, and you verify your work.
+        return f"""You are an expert AI assistant with sandboxed tools on the user's computer. You are deliberate, careful, and you verify your work.
 
 # 🎯 CORE METHOD — ALWAYS FOLLOW
 
