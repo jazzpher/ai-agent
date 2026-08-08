@@ -63,6 +63,16 @@ os.makedirs(LOG_DIR, exist_ok=True)
 SANDBOX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".sandboxes")
 os.makedirs(SANDBOX_DIR, exist_ok=True)
 
+# Context management directory (for offloaded tool outputs)
+CONTEXT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".context")
+os.makedirs(CONTEXT_DIR, exist_ok=True)
+
+# Facts file (L1 atomic facts extracted from conversations)
+FACTS_FILE = os.path.join(WORKSPACE_DIR, ".facts")
+
+# Max chars for tool result summaries injected into context
+MAX_SUMMARY_CHARS = 200
+
 # Sandbox mode: "auto" (try Docker, fall back to venv), "docker", "venv"
 SANDBOX_MODE = os.environ.get("AGENT_SANDBOX_MODE", "auto")
 

@@ -25,6 +25,20 @@ from config import (
 )
 from safety import guard, SafetyViolation
 from sandbox_session import session_manager
+from context_manager import ContextManager
+
+
+def recall_step(step_id: int, session_id: str = None) -> dict:
+    """Recall the full output of a previous step (drill-down into offloaded context)."""
+    try:
+        ctx = ContextManager(session_id)
+        full_content = ctx.recall(step_id)
+        return {
+            "status": "success",
+            "output": _truncate(full_content, max_chars=15000),
+        }
+    except Exception as e:
+        return {"status": "error", "output": f"Cannot recall step {step_id}: {e}"}
 
 
 def get_sandbox_status(session_id: str = None) -> dict:
@@ -1135,6 +1149,28 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "recall_step",
+            "description": (
+                "Recall the full output of a previous tool step. "
+                "Use this when you need to see the full details of a step "
+                "that was offloaded to save context space. "
+                "Step IDs are shown in the summaries as 'Step N: tool — status [→ step_NNN.md]'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "step_id": {
+                        "type": "integer",
+                        "description": "The step number to recall (1-based).",
+                    },
+                },
+                "required": ["step_id"],
+            },
+        },
+    },
 ]
 
 
@@ -1153,4 +1189,5 @@ TOOL_FUNCTIONS = {
     "image_search": image_search,
     "process_image": process_image,
     "remove_background": remove_background,
+    "recall_step": recall_step,
 }

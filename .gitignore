@@ -22,6 +22,9 @@ ENV/
 # Temporary sandboxes (ephemeral venvs)
 .sandboxes/
 
+# Context offloading (tool output files)
+.context/
+
 # Workspace (user uploads + generated files - keep local only)
 workspace/
 !workspace/.gitkeep

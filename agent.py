@@ -41,6 +41,7 @@ from config import (
 from tools import TOOL_DEFINITIONS, TOOL_FUNCTIONS
 from safety import guard
 from sandbox_session import session_manager
+from context_manager import ContextManager
 
 
 # Best-effort token counting
@@ -160,6 +161,9 @@ class AIAgent:
         # Persistent memory
         self._memory_text = ""
         self._load_memory()
+
+        # Context manager (TencentDB-inspired offloading)
+        self.context = ContextManager(self.session_id)
 
         self.system_prompt = self._build_system_prompt()
 
@@ -315,6 +319,20 @@ All code execution (run_bash, run_python, pip_install) happens in a **temporary 
 
 When you need a package that isn't pre-installed, just `pip_install` it — the user won't be affected.
 
+# 🧠 CONTEXT MANAGEMENT (Progressive Disclosure)
+
+Your tool outputs are **offloaded to files** to save context space. You see compact summaries in context, but full details are saved.
+
+**When you need full details of a past step:**
+- Use `recall_step(step_id)` to read the full output of any step
+- Step IDs are shown in the summaries: "Step 3: write_file — OK [→ step_003.md]"
+
+**Key facts are automatically extracted** from your conversations and shown to you as "Known facts." Honor these facts unless the user explicitly changes them.
+
+**Task state is tracked** — you can see your current goal and progress as "📋 Task: ... | ✅ Step 1 | ⏳ Step 2 | ⬜ Step 3"
+
+When you complete a step, the system automatically advances the progress tracker.
+
 # 📋 OUTPUT STYLE
 
 - Be concise. Don't pad responses.
@@ -353,8 +371,9 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
         self.cancel_requested = True
 
     def cleanup_sandbox(self):
-        """Destroy the session's sandbox (called on clear/reset)."""
+        """Destroy the session's sandbox and context (called on clear/reset)."""
         session_manager.destroy(self.session_id)
+        self.context.cleanup()
 
     def set_model(self, model: str):
         self.model = model
@@ -383,6 +402,8 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
             "model": self.model,
             "sandbox_mode": sandbox_info.get("mode", "unknown"),
             "sandbox_packages": len(sandbox_info.get("packages_installed", [])),
+            "context_steps": self.context.step_count,
+            "context_facts": len(self.context.facts),
         }
 
     # ===========================================================
@@ -711,6 +732,13 @@ New direction: <what to do instead>
         if not any(m.get("role") == "system" for m in self.messages):
             self.messages.insert(0, {"role": "system", "content": self.system_prompt})
 
+        # Inject dynamic context block into system message
+        context_block = self.context.build_context_block()
+        if context_block:
+            # Update system message with context
+            base_prompt = self.system_prompt
+            self.messages[0]["content"] = base_prompt + "\n\n# 🧠 DYNAMIC CONTEXT\n\n" + context_block
+
         client = self._get_client()
         self.iteration_count = 0
         full_response = ""
@@ -741,8 +769,9 @@ New direction: <what to do instead>
             )
             self.messages[-1] = {"role": "user", "content": augmented_user_message}
 
-        # Track the current goal for self-evaluation
+        # Track the current goal for self-evaluation and task state
         self._current_goal = user_message[:200]
+        self.context.set_goal(user_message[:200])
         _eval_count = 0
         _MAX_EVALS_PER_TURN = 3
 
@@ -940,7 +969,16 @@ New direction: <what to do instead>
                 full_response += f"{badge} `{tool_name}` — {elapsed:.2f}s — {summary}\n"
                 yield full_response
 
-                # Save raw tool result to message history (no truncation)
+                # Offload full result to file, inject summary into context
+                raw_output = result.get("output", "") if isinstance(result, dict) else str(result)
+                offloaded_summary = self.context.offload(
+                    tool_name=tool_name,
+                    arguments=args,
+                    full_output=raw_output,
+                )
+
+                # Save offloaded summary to message history (compact)
+                # But keep full result for the LLM to reason about
                 self.messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
