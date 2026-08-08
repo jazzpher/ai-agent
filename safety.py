@@ -1,4 +1,4 @@
-﻿"""
+"""
 Safety Guardrails & Sandbox for the AI Agent
 
 Protects the user's system by:

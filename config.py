@@ -1,4 +1,4 @@
-﻿"""
+"""
 Configuration for the AI Agent
 """
 import os
@@ -55,3 +55,33 @@ MEMORY_FILE = os.path.join(WORKSPACE_DIR, "MEMORY.md")
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".agent_logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
+# ============================================================
+# SANDBOX CONFIGURATION
+# ============================================================
+
+# Sandbox directory for ephemeral venvs
+SANDBOX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".sandboxes")
+os.makedirs(SANDBOX_DIR, exist_ok=True)
+
+# Sandbox mode: "auto" (try Docker, fall back to venv), "docker", "venv"
+SANDBOX_MODE = os.environ.get("AGENT_SANDBOX_MODE", "auto")
+
+# Session timeout in seconds (default: 1 hour)
+SANDBOX_TIMEOUT = int(os.environ.get("AGENT_SANDBOX_TIMEOUT", "3600"))
+
+# Core packages pre-installed in every sandbox session
+# These are the packages the agent needs most frequently
+CORE_PACKAGES = [
+    # Image processing (for image tools)
+    "Pillow",
+    # Document handling (for view_file)
+    "python-docx",
+    "python-pptx",
+    "openpyxl",
+    "PyPDF2",
+    "pdfplumber",
+    # Web & data
+    "requests",
+    "beautifulsoup4",
+    "pandas",
+]

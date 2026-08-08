@@ -1,6 +1,6 @@
-﻿"""
+"""
 Tools for the AI Agent (Sandboxed Version)
-Each tool is protected by safety guardrails.
+Each tool is protected by safety guardrails and runs in a per-session sandbox.
 """
 import os
 import subprocess
@@ -24,25 +24,18 @@ from config import (
     MAX_TOOL_OUTPUT_CHARS,
 )
 from safety import guard, SafetyViolation
-
-# Optional Docker sandbox. Imported lazily so users without Docker can still
-# run the agent in regex-only mode.
-try:
-    from sandbox_docker import run_in_docker, DockerNotAvailable, get_status as _docker_status
-    _HAS_DOCKER_SANDBOX = True
-except Exception:
-    _HAS_DOCKER_SANDBOX = False
-
-    class DockerNotAvailable(Exception):
-        pass
-
-    def _docker_status():
-        return {"mode": "regex-only", "available": False, "reason": "sandbox_docker not importable"}
+from sandbox_session import session_manager
 
 
-def get_sandbox_status() -> dict:
+def get_sandbox_status(session_id: str = None) -> dict:
     """Public helper for the UI: describe the current sandbox mode."""
-    return _docker_status()
+    if session_id:
+        try:
+            sb = session_manager.get_or_create(session_id)
+            return sb.get_status()
+        except Exception:
+            pass
+    return {"mode": "unknown", "available": False}
 
 
 # ============================================================
@@ -62,8 +55,8 @@ def _truncate(text: str, max_chars: int = MAX_TOOL_OUTPUT_CHARS) -> str:
     )
 
 
-def run_bash(command: str, timeout: int = 30, use_docker: bool = True) -> dict:
-    """Run a shell command. Uses Docker sandbox if available, else host+regex."""
+def run_bash(command: str, timeout: int = 30, session_id: str = None) -> dict:
+    """Run a shell command in the session's sandbox."""
     check = guard.validate_command(command)
     if not check["safe"]:
         return {
@@ -73,59 +66,20 @@ def run_bash(command: str, timeout: int = 30, use_docker: bool = True) -> dict:
         }
 
     timeout = min(max(timeout, 1), 120)
+    sandbox = session_manager.get_or_create(session_id)
+    result = sandbox.run_command(command, timeout)
 
-    # ---- Try Docker first if requested ----
-    if use_docker and _HAS_DOCKER_SANDBOX:
-        try:
-            r = run_in_docker("bash", command, timeout=timeout)
-            r["output"] = _truncate(r.get("output", ""))
-            return r
-        except DockerNotAvailable as e:
-            # Fall through to host execution
-            fallback_note = f"⚠️ Docker sandbox unavailable ({e}); ran on host with regex check only.\n\n"
-        except Exception as e:
-            return {"status": "error", "output": f"Docker error: {e}", "risk_level": "sandboxed"}
-    else:
-        fallback_note = ""
+    # Add safety metadata
+    result["risk_level"] = check["risk_level"]
+    if check["risk_level"] == "risky":
+        result["output"] = check["message"] + "\n\n---\n\n" + result.get("output", "")
 
-    # ---- Host execution (with regex blocklist) ----
-    try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=WORKSPACE_DIR,
-            encoding='utf-8',
-            errors='replace',
-        )
-        out = ""
-        if result.stdout:
-            out += f"STDOUT:\n{result.stdout}"
-        if result.stderr:
-            out += f"\nSTDERR:\n{result.stderr}"
-        if not out:
-            out = "(no output)"
-
-        prefix = fallback_note
-        if check["risk_level"] == "risky":
-            prefix += check["message"] + "\n\n---\n\n"
-
-        return {
-            "status": "success" if result.returncode == 0 else "error",
-            "returncode": result.returncode,
-            "output": _truncate(prefix + out.strip()),
-            "risk_level": check["risk_level"],
-            "sandbox": "host",
-        }
-    except subprocess.TimeoutExpired:
-        return {"status": "error", "output": fallback_note + f"Command timed out after {timeout} seconds"}
-    except Exception as e:
-        return {"status": "error", "output": fallback_note + str(e)}
+    result["output"] = _truncate(result.get("output", ""))
+    return result
 
 
-def read_file(path: str, max_bytes: int = MAX_FILE_READ_BYTES, offset: int = 0) -> dict:
+def read_file(path: str, max_bytes: int = MAX_FILE_READ_BYTES, offset: int = 0,
+              session_id: str = None) -> dict:
     """Read a file with safety checks. Supports offset for large files."""
     check = guard.validate_file_read(path)
     if not check["safe"]:
@@ -158,8 +112,8 @@ def read_file(path: str, max_bytes: int = MAX_FILE_READ_BYTES, offset: int = 0) 
                     f"Cannot read binary file: {resolved}\n"
                     f"File type: {ext}\n"
                     f"File size: {file_size} bytes\n\n"
-                    f"💡 Use run_python with python-docx / openpyxl / "
-                    f"PyPDF2 / Pillow / zipfile, etc."
+                    f"💡 Use `view_file` tool to preview this file, "
+                    f"or use `run_python` with appropriate libraries."
                 ),
             }
 
@@ -186,7 +140,7 @@ def read_file(path: str, max_bytes: int = MAX_FILE_READ_BYTES, offset: int = 0) 
                 "output": (
                     f"File appears to be binary: {resolved}\n"
                     f"File size: {file_size} bytes\n"
-                    f"Null bytes detected. Use run_python with appropriate libraries."
+                    f"Null bytes detected. Use `view_file` or `run_python`."
                 ),
             }
 
@@ -205,14 +159,234 @@ def read_file(path: str, max_bytes: int = MAX_FILE_READ_BYTES, offset: int = 0) 
             "output": (
                 f"Cannot decode file as text: {resolved}\n"
                 f"File size: {file_size} bytes\n\n"
-                f"💡 This file appears to be binary. Use run_python."
+                f"💡 This file appears to be binary. Use `view_file` or `run_python`."
             ),
         }
     except Exception as e:
         return {"status": "error", "output": str(e)}
 
 
-def write_file(path: str, content: str) -> dict:
+def view_file(path: str, session_id: str = None) -> dict:
+    """
+    View/preview a file. Auto-detects file type and returns a preview.
+    Supports: docx, pdf, pptx, xlsx, images, text files.
+    """
+    check = guard.validate_file_read(path)
+    if not check["safe"]:
+        return {"status": "blocked", "output": check["message"], "risk_level": "blocked"}
+
+    try:
+        resolved = guard.validate_path(path, allow_workspace_only=False, must_exist=True)
+
+        if os.path.isdir(resolved):
+            return {
+                "status": "error",
+                "output": f"'{resolved}' is a directory. Use `list_files` instead.",
+            }
+
+        _, ext = os.path.splitext(resolved.lower())
+        file_size = os.path.getsize(resolved)
+
+        # Route to appropriate handler based on extension
+        if ext in ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'):
+            return _view_image(resolved, ext, file_size)
+
+        elif ext == '.pdf':
+            return _view_pdf(resolved, file_size, session_id)
+
+        elif ext == '.docx':
+            return _view_docx(resolved, file_size, session_id)
+
+        elif ext == '.pptx':
+            return _view_pptx(resolved, file_size, session_id)
+
+        elif ext in ('.xlsx', '.xls'):
+            return _view_excel(resolved, file_size, session_id)
+
+        elif ext in ('.csv',):
+            return _view_csv(resolved, file_size)
+
+        else:
+            # Fall back to text read
+            return read_file(path, session_id=session_id)
+
+    except SafetyViolation as e:
+        return {"status": "blocked", "output": str(e), "risk_level": "blocked"}
+    except Exception as e:
+        return {"status": "error", "output": f"view_file error: {type(e).__name__}: {e}"}
+
+
+def _view_image(path: str, ext: str, file_size: int) -> dict:
+    """Return image metadata (actual preview is handled by the UI)."""
+    try:
+        from PIL import Image
+        img = Image.open(path)
+        width, height = img.size
+        return {
+            "status": "success",
+            "output": (
+                f"🖼️ Image: {os.path.basename(path)}\n"
+                f"Size: {width}x{height} pixels\n"
+                f"Mode: {img.mode}\n"
+                f"File size: {file_size:,} bytes\n"
+                f"Format: {ext[1:].upper()}\n\n"
+                f"📁 Path: {path}"
+            ),
+            "file_type": "image",
+            "path": path,
+            "width": width,
+            "height": height,
+        }
+    except ImportError:
+        return {
+            "status": "success",
+            "output": (
+                f"🖼️ Image: {os.path.basename(path)}\n"
+                f"File size: {file_size:,} bytes\n"
+                f"Format: {ext[1:].upper()}\n\n"
+                f"📁 Path: {path}"
+            ),
+            "file_type": "image",
+            "path": path,
+        }
+    except Exception as e:
+        return {"status": "error", "output": f"Cannot read image: {e}"}
+
+
+def _view_pdf(path: str, file_size: int, session_id: str = None) -> dict:
+    """Extract text from PDF using the session sandbox."""
+    sandbox = session_manager.get_or_create(session_id)
+    code = (
+        "import sys\n"
+        "try:\n"
+        "    import pdfplumber\n"
+        "    with pdfplumber.open(sys.argv[1]) as pdf:\n"
+        f"        pages = pdf.pages[:{20}]\n"
+        "        for i, page in enumerate(pages):\n"
+        "            text = page.extract_text() or ''\n"
+        "            print(f'--- Page {i+1} ---')\n"
+        "            print(text)\n"
+        "            print()\n"
+        "except ImportError:\n"
+        "    try:\n"
+        "        from PyPDF2 import PdfReader\n"
+        "        reader = PdfReader(sys.argv[1])\n"
+        f"        for i, page in enumerate(reader.pages[:{20}]):\n"
+        "            text = page.extract_text() or ''\n"
+        "            print(f'--- Page {i+1} ---')\n"
+        "            print(text)\n"
+        "            print()\n"
+        "    except Exception as e:\n"
+        "        print(f'Error: {e}')\n"
+    )
+    result = sandbox.run_python(f"import sys; exec(open('/dev/null').read())\n" + code.replace("sys.argv[1]", f"'{path}'"))
+    result["file_type"] = "pdf"
+    result["path"] = path
+    result["file_size"] = file_size
+    result["output"] = _truncate(result.get("output", ""), max_chars=15000)
+    return result
+
+
+def _view_docx(path: str, file_size: int, session_id: str = None) -> dict:
+    """Extract text from DOCX using the session sandbox."""
+    sandbox = session_manager.get_or_create(session_id)
+    code = f"""
+import os
+try:
+    from docx import Document
+    doc = Document(r'{path}')
+    for para in doc.paragraphs:
+        print(para.text)
+    # Also extract tables
+    for i, table in enumerate(doc.tables):
+        print(f'\\n--- Table {{i+1}} ---')
+        for row in table.rows:
+            print(' | '.join(cell.text for cell in row.cells))
+except Exception as e:
+    print(f'Error reading docx: {{e}}')
+"""
+    result = sandbox.run_python(code)
+    result["file_type"] = "docx"
+    result["path"] = path
+    result["file_size"] = file_size
+    result["output"] = _truncate(result.get("output", ""), max_chars=15000)
+    return result
+
+
+def _view_pptx(path: str, file_size: int, session_id: str = None) -> dict:
+    """Extract text from PPTX using the session sandbox."""
+    sandbox = session_manager.get_or_create(session_id)
+    code = f"""
+try:
+    from pptx import Presentation
+    prs = Presentation(r'{path}')
+    for i, slide in enumerate(prs.slides):
+        print(f'--- Slide {{i+1}} ---')
+        for shape in slide.shapes:
+            if hasattr(shape, 'text') and shape.text.strip():
+                print(shape.text)
+        print()
+except Exception as e:
+    print(f'Error reading pptx: {{e}}')
+"""
+    result = sandbox.run_python(code)
+    result["file_type"] = "pptx"
+    result["path"] = path
+    result["file_size"] = file_size
+    result["output"] = _truncate(result.get("output", ""), max_chars=15000)
+    return result
+
+
+def _view_excel(path: str, file_size: int, session_id: str = None) -> dict:
+    """Extract data from Excel using the session sandbox."""
+    sandbox = session_manager.get_or_create(session_id)
+    code = f"""
+try:
+    import openpyxl
+    wb = openpyxl.load_workbook(r'{path}', read_only=True, data_only=True)
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        print(f'--- Sheet: {{sheet_name}} ---')
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if i >= 50:  # Limit to 50 rows
+                print(f'... ({{ws.max_row - 50}} more rows)')
+                break
+            print(' | '.join(str(cell) if cell is not None else '' for cell in row))
+        print()
+    wb.close()
+except Exception as e:
+    print(f'Error reading excel: {{e}}')
+"""
+    result = sandbox.run_python(code)
+    result["file_type"] = "excel"
+    result["path"] = path
+    result["file_size"] = file_size
+    result["output"] = _truncate(result.get("output", ""), max_chars=15000)
+    return result
+
+
+def _view_csv(path: str, file_size: int) -> dict:
+    """Read CSV file (text-based, no sandbox needed)."""
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            lines = []
+            for i, line in enumerate(f):
+                if i >= 100:
+                    lines.append(f"... (more rows)")
+                    break
+                lines.append(line.rstrip())
+        return {
+            "status": "success",
+            "output": "\n".join(lines),
+            "file_type": "csv",
+            "path": path,
+            "file_size": file_size,
+        }
+    except Exception as e:
+        return {"status": "error", "output": f"Cannot read CSV: {e}"}
+
+
+def write_file(path: str, content: str, session_id: str = None) -> dict:
     """Write a file with safety checks (workspace only)."""
     check = guard.validate_file_write(path)
     if not check["safe"]:
@@ -242,7 +416,8 @@ def write_file(path: str, content: str) -> dict:
         return {"status": "error", "output": str(e)}
 
 
-def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict:
+def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False,
+              session_id: str = None) -> dict:
     """
     Surgical edit: replace `old_string` with `new_string` in `path`.
     Fails if old_string is not found, or (when replace_all=False) appears more than once.
@@ -308,7 +483,7 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         return {"status": "error", "output": str(e)}
 
 
-def list_files(path: str = ".") -> dict:
+def list_files(path: str = ".", session_id: str = None) -> dict:
     """List files in workspace."""
     try:
         resolved = guard.validate_path(path, allow_workspace_only=True, must_exist=True)
@@ -329,7 +504,7 @@ def list_files(path: str = ".") -> dict:
         return {"status": "error", "output": str(e)}
 
 
-def web_search(query: str, max_results: int = 5) -> dict:
+def web_search(query: str, max_results: int = 5, session_id: str = None) -> dict:
     """Search the web. Uses duckduckgo_search (real results) if installed, else falls back."""
     if not HAS_DDG:
         return {
@@ -355,7 +530,7 @@ def web_search(query: str, max_results: int = 5) -> dict:
         return {"status": "error", "output": f"Search error: {e}"}
 
 
-def fetch_page(url: str, max_chars: int = 12000) -> dict:
+def fetch_page(url: str, max_chars: int = 12000, session_id: str = None) -> dict:
     """Fetch a URL and return the main text content (trafilatura-extracted)."""
     if not (url.startswith("http://") or url.startswith("https://")):
         return {"status": "error", "output": "URL must start with http:// or https://"}
@@ -388,123 +563,61 @@ def fetch_page(url: str, max_chars: int = 12000) -> dict:
         return {"status": "error", "output": f"Fetch error: {e}"}
 
 
-def pip_install(package: str, use_docker: bool = True) -> dict:
+def pip_install(package: str, session_id: str = None) -> dict:
     """
-    Install a Python package.
-    - If Docker sandbox is available, installs INSIDE the container (and is
-      thrown away when the container exits). This is the safest mode.
-    - Otherwise, installs on the host. The strict package-spec regex has
-      already passed by the time we get here.
+    Install a Python package in the session's sandbox (temporary).
+    The package will be available for the rest of the session only.
+    It will NOT be installed on the user's host machine.
     """
     check = guard.validate_pip_install(package)
     if not check["safe"]:
         return {"status": "blocked", "output": check["message"], "risk_level": "blocked"}
 
-    pip_command = f"python -m pip install {package} --quiet --disable-pip-version-check --no-warn-script-location"
+    sandbox = session_manager.get_or_create(session_id)
+    result = sandbox.install_package(package)
 
-    if use_docker and _HAS_DOCKER_SANDBOX:
-        try:
-            r = run_in_docker("bash", pip_command, timeout=180)
-            r["output"] = _truncate(r.get("output", ""), max_chars=2000)
-            if r.get("status") == "success":
-                r["output"] = f"✅ Installed in container: {package}\n" + r["output"]
-            else:
-                r["output"] = f"❌ Failed to install {package} in container\n" + r["output"]
-            return r
-        except DockerNotAvailable:
-            pass
-
-    # Host fallback
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", package, "--quiet",
-             "--disable-pip-version-check", "--no-warn-script-location"],
-            capture_output=True, text=True, timeout=180,
-            encoding='utf-8', errors='replace',
+    if result.get("status") == "success":
+        result["output"] = (
+            f"✅ Installed '{package}' in sandbox (temporary)\n"
+            f"📦 Available for the rest of this session only.\n"
+            f"🧹 Will be cleaned up when session ends.\n"
+            f"🛡️ Host machine is NOT modified."
         )
-        out = result.stdout or ""
-        if result.stderr:
-            out += result.stderr
-        if result.returncode == 0:
-            return {
-                "status": "success",
-                "output": f"✅ Installed on host: {package}\n{out.strip()[-1000:]}",
-                "sandbox": "host",
-            }
-        return {
-            "status": "error",
-            "output": f"❌ Failed to install {package}\n{out.strip()[-1500:]}",
-            "sandbox": "host",
-        }
-    except subprocess.TimeoutExpired:
-        return {"status": "error", "output": "Installation timed out (180s)"}
-    except Exception as e:
-        return {"status": "error", "output": str(e)}
+    else:
+        result["output"] = f"❌ Failed to install '{package}'\n" + result.get("output", "")
+
+    return result
 
 
-def run_python(code: str, use_docker: bool = True) -> dict:
-    """Execute Python code. Uses Docker sandbox if available, else host+regex."""
+def run_python(code: str, session_id: str = None) -> dict:
+    """Execute Python code in the session's sandbox."""
     check = guard.validate_python_code(code)
     if not check["safe"]:
         return {"status": "blocked", "output": check["message"], "risk_level": "blocked"}
 
-    # ---- Docker path ----
-    if use_docker and _HAS_DOCKER_SANDBOX:
-        try:
-            r = run_in_docker("python", code, timeout=60)
-            r["output"] = _truncate(r.get("output", ""))
-            return r
-        except DockerNotAvailable as e:
-            fallback_note = f"⚠️ Docker sandbox unavailable ({e}); ran on host with regex check only.\n\n"
-        except Exception as e:
-            return {"status": "error", "output": f"Docker error: {e}", "risk_level": "sandboxed"}
-    else:
-        fallback_note = ""
+    sandbox = session_manager.get_or_create(session_id)
+    result = sandbox.run_python(code)
 
-    # ---- Host path ----
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            cwd=WORKSPACE_DIR,
-            encoding='utf-8',
-            errors='replace',
+    # Add safety metadata
+    if check["risk_level"] == "risky":
+        result["output"] = (
+            check["message"]
+            + "\n\n---\n\n"
+            + "⚠️ This is a warning, not a block. The code ran.\n\n"
+            + result.get("output", "")
         )
-        out = ""
-        if result.stdout:
-            out += f"Output:\n{result.stdout}"
-        if result.stderr:
-            out += f"\nErrors:\n{result.stderr}"
-        if not out:
-            out = "(no output - code executed successfully)"
 
-        prefix = fallback_note
-        if check["risk_level"] == "risky":
-            prefix += (
-                check["message"]
-                + "\n\n---\n\n"
-                + "⚠️ This is a warning, not a block. The code ran.\n\n"
-            )
-
-        return {
-            "status": "success" if result.returncode == 0 else "error",
-            "output": _truncate(prefix + out.strip()),
-            "risk_level": check["risk_level"],
-            "sandbox": "host",
-        }
-    except subprocess.TimeoutExpired:
-        return {"status": "error", "output": fallback_note + "Python execution timed out (60s)"}
-    except Exception as e:
-        return {"status": "error", "output": fallback_note + str(e)}
+    result["risk_level"] = check["risk_level"]
+    result["output"] = _truncate(result.get("output", ""))
+    return result
 
 
 # ============================================================
 # IMAGE / FILE TOOLS
 # ============================================================
 
-def download_file(url: str, filename: str = None, max_bytes: int = 50_000_000) -> dict:
+def download_file(url: str, filename: str = None, max_bytes: int = 50_000_000,
+                  session_id: str = None) -> dict:
     """
     Download a file from a URL into the workspace.
     Used to grab logos, images, PDFs, etc. from the web.
@@ -565,7 +678,7 @@ def download_file(url: str, filename: str = None, max_bytes: int = 50_000_000) -
         return {"status": "error", "output": f"Download error: {e}"}
 
 
-def image_search(query: str, max_results: int = 5) -> dict:
+def image_search(query: str, max_results: int = 5, session_id: str = None) -> dict:
     """
     Search the web for images. Uses duckduckgo_search if available.
     Returns URLs of images matching the query. Then use download_file to grab them.
@@ -604,18 +717,11 @@ def process_image(
     crop: tuple = None,
     convert_to: str = None,
     make_transparent: bool = False,
+    session_id: str = None,
 ) -> dict:
     """
     Process an image using Pillow: resize, crop, convert format,
     or attempt to make a white background transparent.
-
-    Args:
-        path: input image path (within workspace)
-        output: output filename (defaults to overwriting)
-        resize: (width, height) tuple, or None
-        crop: (left, top, right, bottom) tuple, or None
-        convert_to: "PNG" / "JPEG" / "WEBP" / etc., or None
-        make_transparent: if True, convert near-white pixels to transparent
     """
     try:
         from PIL import Image
@@ -635,8 +741,6 @@ def process_image(
         if resize:
             img = img.resize(resize, Image.LANCZOS)
         if make_transparent:
-            # Convert near-white to transparent. Useful for cleaning up
-            # logos scraped from the web that have a white background.
             img = img.convert("RGBA")
             pixels = img.load()
             threshold = 240
@@ -648,7 +752,6 @@ def process_image(
         if convert_to:
             target_format = convert_to.upper()
             if target_format in ("JPEG", "JPG") and img.mode in ("RGBA", "LA", "P"):
-                # Flatten onto white background for JPEG
                 bg = Image.new("RGB", img.size, (255, 255, 255))
                 bg.paste(img, mask=img.split()[-1])
                 img = bg
@@ -680,12 +783,12 @@ def process_image(
     except SafetyViolation as e:
         return {"status": "blocked", "output": str(e), "risk_level": "blocked"}
     except ImportError:
-        return {"status": "error", "output": "Pillow not installed. Run: pip install pillow"}
+        return {"status": "error", "output": "Pillow not installed in sandbox. Try: pip_install('Pillow')"}
     except Exception as e:
         return {"status": "error", "output": f"Image error: {type(e).__name__}: {e}"}
 
 
-def remove_background(path: str, output: str = None) -> dict:
+def remove_background(path: str, output: str = None, session_id: str = None) -> dict:
     """
     Remove the background from an image, leaving the foreground subject
     with a transparent background. Uses the `rembg` library if installed,
@@ -717,12 +820,13 @@ def remove_background(path: str, output: str = None) -> dict:
                 "path": display,
             }
         except ImportError:
-            # Fall back to threshold-based transparency (only good for white backgrounds)
+            # Fall back to threshold-based transparency
             return process_image(
                 path=path,
                 output=output,
                 make_transparent=True,
                 convert_to="PNG",
+                session_id=session_id,
             )
 
     except SafetyViolation as e:
@@ -762,7 +866,8 @@ TOOL_DEFINITIONS = [
             "name": "read_file",
             "description": (
                 "Read a file. Supports an offset/max_bytes for large files. "
-                "Binary files and credential files are blocked."
+                "Binary files and credential files are blocked. "
+                "Use view_file for binary files (docx, pdf, images, etc.)."
             ),
             "parameters": {
                 "type": "object",
@@ -770,6 +875,24 @@ TOOL_DEFINITIONS = [
                     "path": {"type": "string", "description": "File path."},
                     "max_bytes": {"type": "integer", "description": "Max bytes to read (default 50000)."},
                     "offset": {"type": "integer", "description": "Byte offset to start from."},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "view_file",
+            "description": (
+                "View/preview a file. Auto-detects file type and returns a preview. "
+                "Supports: docx, pdf, pptx, xlsx, images (png/jpg/gif/bmp/webp), "
+                "csv, and text files. Use this instead of read_file for binary files."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path to view."},
                 },
                 "required": ["path"],
             },
@@ -874,8 +997,10 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "pip_install",
             "description": (
-                "Install a Python package using pip. Known malicious/typosquat "
-                "packages are blocked. The package spec is strictly validated."
+                "Install a Python package in the session's TEMPORARY sandbox. "
+                "The package will be available for the rest of the session only "
+                "and will NOT be installed on the user's host machine. "
+                "Known malicious/typosquat packages are blocked."
             ),
             "parameters": {
                 "type": "object",
@@ -894,7 +1019,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "run_python",
             "description": (
-                "Execute Python code in the workspace directory. "
+                "Execute Python code in the session's sandbox. "
                 "Dangerous patterns (eval, exec, os.system) are FLAGGED but "
                 "the code still runs - this is a warning, not a sandbox. "
                 "Use for calculations, data processing, quick scripts."
@@ -1014,6 +1139,7 @@ TOOL_DEFINITIONS = [
 TOOL_FUNCTIONS = {
     "run_bash": run_bash,
     "read_file": read_file,
+    "view_file": view_file,
     "write_file": write_file,
     "edit_file": edit_file,
     "list_files": list_files,
@@ -1026,4 +1152,3 @@ TOOL_FUNCTIONS = {
     "process_image": process_image,
     "remove_background": remove_background,
 }
-

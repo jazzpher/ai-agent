@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -18,6 +18,9 @@ ENV/
 # Agent runtime
 .agent_logs/
 *.log
+
+# Temporary sandboxes (ephemeral venvs)
+.sandboxes/
 
 # Workspace (user uploads + generated files - keep local only)
 workspace/

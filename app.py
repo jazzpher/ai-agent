@@ -1,16 +1,17 @@
-﻿"""
+"""
 AI Agent - Web UI (Gradio 5.x compatible)
 
 New in this version:
-- Gradio 5.x API: theme passed to gr.Blocks(), Chatbot uses type='messages'
-- Metrics panel: live tokens, cost, iterations, tool calls
-- Sandbox status badge: 🐳 Docker / 🛡️ regex-only
-- File preview: shows inline previews of common file types
-- Cleaned up event handlers
+- Per-session agent instances (no more shared singleton)
+- Temporary sandbox for all tool execution
+- Sandbox status display (venv/docker mode)
+- view_file tool for docx/pdf/pptx/images
+- Metrics panel with sandbox info
 """
 import os
 import shutil
 import time
+import uuid
 from pathlib import Path
 
 import gradio as gr
@@ -18,13 +19,7 @@ import gradio as gr
 from agent import AIAgent
 from config import NVIDIA_API_KEY, DEFAULT_MODEL, WORKSPACE_DIR
 from tools import get_sandbox_status, TOOL_FUNCTIONS
-
-
-# ============================================================
-# AGENT SINGLETON
-# ============================================================
-
-agent = AIAgent()
+from sandbox_session import session_manager
 
 
 # ============================================================
@@ -66,8 +61,12 @@ def copy_uploads_to_workspace(file_paths) -> tuple[list[str], str]:
 # METRICS PANEL
 # ============================================================
 
-def format_metrics() -> str:
+def format_metrics(agent) -> str:
     m = agent.get_metrics()
+    sandbox_mode = m.get("sandbox_mode", "unknown")
+    sandbox_emoji = "🐳" if sandbox_mode == "docker" else "🛡️"
+    sandbox_pkg_count = m.get("sandbox_packages", 0)
+
     return (
         f"**📊 Session metrics**\n\n"
         f"| Metric | Value |\n"
@@ -82,33 +81,42 @@ def format_metrics() -> str:
         f"| Completion tokens | {m['completion_tokens']:,} |\n"
         f"| **Total tokens** | **{m['total_tokens']:,}** |\n"
         f"| **Est. cost** | **${m['estimated_cost_usd']:.4f}** |\n"
+        f"| {sandbox_emoji} Sandbox | {sandbox_mode} ({sandbox_pkg_count} pkgs) |\n"
     )
 
 
 # ============================================================
-# SANDBAD STATUS
+# SANDBOX STATUS
 # ============================================================
 
-def format_sandbox_status() -> str:
-    status = get_sandbox_status()
+def format_sandbox_status(agent) -> str:
+    status = get_sandbox_status(agent.session_id)
     mode = status.get("mode", "unknown")
-    if mode == "docker" and status.get("available"):
+
+    if mode == "docker":
         return (
             f"🐳 **Docker sandbox: ACTIVE**\n"
-            f"- Version: {status.get('version', '?')}\n"
-            f"- Image: `{status.get('image', '?')}`\n"
-            f"- Limits: {status.get('memory', '?')} RAM, {status.get('cpus', '?')} CPU\n\n"
-            f"All bash/python/pip commands run in an isolated container "
-            f"with no network and a read-only filesystem."
+            f"- Session: `{status.get('session_id', '?')}`\n"
+            f"- Uptime: {status.get('uptime_seconds', 0)}s\n"
+            f"- Packages: {len(status.get('packages_installed', []))}\n\n"
+            f"All commands run in an isolated container."
+        )
+    elif mode == "venv":
+        pkgs = status.get("packages_installed", [])
+        pkg_preview = ", ".join(pkgs[:5])
+        if len(pkgs) > 5:
+            pkg_preview += f" (+{len(pkgs) - 5} more)"
+        return (
+            f"🛡️ **Sandbox: ACTIVE (venv mode)**\n"
+            f"- Session: `{status.get('session_id', '?')}`\n"
+            f"- Uptime: {status.get('uptime_seconds', 0)}s\n"
+            f"- Packages: {pkg_preview or 'installing...'}\n\n"
+            f"⚠️ Host machine is NOT modified. Install Docker for stronger isolation."
         )
     else:
-        reason = status.get("reason", "unknown")
         return (
-            f"🛡️ **Regex-only sandbox**\n"
-            f"- Reason: {reason}\n"
-            f"- Install Docker Desktop for real OS-level isolation\n\n"
-            f"Dangerous commands are blocked by a regex blocklist. "
-            f"This is defense-in-depth, not a true sandbox."
+            f"⏳ **Sandbox: Initializing...**\n\n"
+            f"The sandbox will be created on first use."
         )
 
 
@@ -116,7 +124,7 @@ def format_sandbox_status() -> str:
 # CHAT STREAMING
 # ============================================================
 
-def chat_stream(message: str, history: list, api_key: str, model: str, file_paths):
+def chat_stream(message: str, history: list, api_key: str, model: str, file_paths, agent: AIAgent):
     """Stream a chat response. Uses Gradio 5 'messages' format."""
     if not message.strip() and not file_paths:
         yield history, ""
@@ -147,16 +155,20 @@ def chat_stream(message: str, history: list, api_key: str, model: str, file_path
     # Stream agent response (with two-pass analyze-then-act)
     for partial in agent.chat_stream(display_message, uploaded_files_info=upload_info):
         history[-1]["content"] = partial
-        yield history, format_metrics()
+        yield history, format_metrics(agent)
 
 
 # ============================================================
 # EVENT HANDLERS
 # ============================================================
 
-def clear_chat():
+def clear_chat(agent: AIAgent):
+    """Clear chat and destroy the old sandbox."""
+    agent.cleanup_sandbox()
     agent.reset()
-    return [], "", "No files uploaded", [], format_metrics()
+    # Create a new agent (new session)
+    new_agent = AIAgent()
+    return new_agent, [], "", "No files uploaded", [], format_metrics(new_agent)
 
 
 def handle_upload(files):
@@ -175,19 +187,19 @@ def handle_upload(files):
     return (" | ".join(info) if info else "No files uploaded"), paths
 
 
-def stop_chat():
+def stop_chat(agent: AIAgent):
     """User clicked the stop button. Cancel the running agent and revert UI."""
     agent.cancel()
     return gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False, value="⏹️")
 
 
-def start_chat(message, history, api_key, model, file_paths):
+def start_chat(message, history, api_key, model, file_paths, agent: AIAgent):
     """
-    Streaming entry point. Yields 7 values per yield:
-    (history, metrics, send_btn, stop_btn, file_status, uploaded_files, msg)
+    Streaming entry point. Yields 8 values per yield:
+    (history, metrics, send_btn, stop_btn, file_status, uploaded_files, msg, agent)
 
-    Send ↔ Stop button toggle:
-    - On entry: swap Send → Stop (hide Send, show Stop with red color)
+    Send <-> Stop button toggle:
+    - On entry: swap Send -> Stop (hide Send, show Stop with red color)
     - During streaming: keep Stop visible
     - On exit: restore Send (show Send, hide Stop) AND clear uploaded files AND clear msg
 
@@ -201,8 +213,8 @@ def start_chat(message, history, api_key, model, file_paths):
 
     # Preserved state: keep everything as-is during the "nothing to do" path
     if not message.strip() and not file_paths:
-        yield (history or [], format_metrics(),
-               no_change, no_change, no_change, no_change, no_change)
+        yield (history or [], format_metrics(agent),
+               no_change, no_change, no_change, no_change, no_change, no_change)
         return
 
     # Reset cancel flag
@@ -215,24 +227,25 @@ def start_chat(message, history, api_key, model, file_paths):
         else "No files uploaded"
     )
 
-    # ---- Phase 1: Enter "running" mode (swap Send → Stop) ----
+    # ---- Phase 1: Enter "running" mode (swap Send -> Stop) ----
     send_state = gr.update(visible=False, interactive=False)
     stop_state = gr.update(visible=True, interactive=True, variant="stop", value="⏹️ Stop")
     yield (
         history or [],
-        format_metrics(),
+        format_metrics(agent),
         send_state,
         stop_state,
         cur_status,
         list(file_paths or []),
         no_change,        # keep msg as-is during running
+        no_change,        # keep agent as-is
     )
 
     # ---- Phase 2: Run the stream (keep Stop visible) ----
     try:
-        for h, metrics in chat_stream(message, history, api_key, model, file_paths):
+        for h, metrics in chat_stream(message, history, api_key, model, file_paths, agent):
             yield (h, metrics, send_state, stop_state,
-                   cur_status, list(file_paths or []), no_change)
+                   cur_status, list(file_paths or []), no_change, no_change)
     except Exception as e:
         # Surface the error in the metrics panel so the user can see it
         err = f"❌ {type(e).__name__}: {e}"
@@ -241,7 +254,7 @@ def start_chat(message, history, api_key, model, file_paths):
         else:
             history = [{"role": "assistant", "content": err}]
         yield (history, err, send_state, stop_state,
-               cur_status, list(file_paths or []), no_change)
+               cur_status, list(file_paths or []), no_change, no_change)
     finally:
         # ---- Phase 3: Exit "running" mode ----
         # Restore buttons, clear uploaded files, clear msg textbox
@@ -253,6 +266,7 @@ def start_chat(message, history, api_key, model, file_paths):
             gr.update(value="No files uploaded"),  # clear file_status text
             [],                                     # clear uploaded_files state
             gr.update(value=""),                     # clear msg textbox
+            no_change,                               # keep agent
         )
 
 
@@ -303,9 +317,12 @@ def build_app():
             """
             # 🤖 AI Agent
             **Sandboxed local AI assistant** with streaming responses, file tools,
-            and a real Docker sandbox.
+            temporary sandbox, and a real Docker sandbox option.
             """
         )
+
+        # Per-session agent (created fresh for each browser session)
+        agent_state = gr.State(lambda: AIAgent())
 
         with gr.Row():
             # ---- LEFT: chat + input ----
@@ -351,6 +368,7 @@ def build_app():
                             "I-search mo kung paano gumawa ng FastAPI app, tapos basahin mo yung top result",
                             "I-install mo ang rich at gawa ka ng colored output",
                             "Gumawa ka ng simple Flask web server",
+                            "Basahin mo yung uploaded na docx file at i-summarize",
                             "Test: subukan mong i-delete ang C:\\Windows (blocked dapat)",
                             "Test: format C: (blocked dapat)",
                         ],
@@ -377,12 +395,15 @@ def build_app():
                 gr.Markdown("---")
 
                 # Sandbox status (auto-loaded)
-                sandbox_md = gr.Markdown(format_sandbox_status)
+                sandbox_md = gr.Markdown(
+                    lambda: format_sandbox_status(AIAgent()),
+                    every=30,  # refresh every 30s
+                )
 
                 gr.Markdown("---")
 
                 # Metrics (auto-updated per turn)
-                metrics_md = gr.Markdown(format_metrics)
+                metrics_md = gr.Markdown(lambda: format_metrics(AIAgent()))
 
                 gr.Markdown("---")
 
@@ -403,6 +424,12 @@ def build_app():
                     - Pip injection vectors
                     - Path traversal attacks
                     - Credential file reads
+
+                    ### 📦 Sandbox info
+                    - All code runs in a **temporary sandbox**
+                    - Installed packages are session-only
+                    - Host machine is **never modified**
+                    - Install Docker for stronger isolation
                     """
                 )
 
@@ -420,13 +447,13 @@ def build_app():
         )
 
         # Main chat event
-        chat_inputs = [msg, chatbot, api_key_input, model_input, uploaded_files]
+        chat_inputs = [msg, chatbot, api_key_input, model_input, uploaded_files, agent_state]
         # Outputs: chatbot (history), metrics, send_btn, stop_btn,
         #          file_status, uploaded_files (clear on exit),
-        #          msg (clear textbox on exit)
+        #          msg (clear textbox on exit), agent_state
         chat_outputs = [
             chatbot, metrics_md, send_btn, stop_btn,
-            file_status, uploaded_files, msg,
+            file_status, uploaded_files, msg, agent_state,
         ]
 
         send_btn.click(
@@ -443,13 +470,15 @@ def build_app():
         # Stop
         stop_btn.click(
             stop_chat,
+            inputs=[agent_state],
             outputs=[send_btn, stop_btn],
         )
 
         # Clear
         clear_btn.click(
             clear_chat,
-            outputs=[chatbot, msg, file_status, uploaded_files, metrics_md],
+            inputs=[agent_state],
+            outputs=[agent_state, chatbot, msg, file_status, uploaded_files, metrics_md],
         )
 
         # Example dropdown -> message
@@ -476,14 +505,10 @@ if __name__ == "__main__":
     print("=" * 50)
     print("  🤖 AI Agent - Sandboxed Local Assistant")
     print("  ⚡ STREAMING ENABLED")
+    print("  📦 TEMPORARY SANDBOX")
     print("=" * 50)
     print(f"  📂 Workspace: {WORKSPACE_DIR}")
     print(f"  🛡️  Safety: ACTIVE")
-    sb = get_sandbox_status()
-    if sb.get("available") and sb.get("mode") == "docker":
-        print(f"  🐳 Sandbox: Docker ({sb.get('version', '?')})")
-    else:
-        print(f"  🛡️  Sandbox: regex-only ({sb.get('reason', '?')})")
     print(f"  🌐 URL: http://127.0.0.1:7860")
     print("=" * 50)
 
@@ -494,4 +519,3 @@ if __name__ == "__main__":
         share=False,
         inbrowser=True,
     )
-

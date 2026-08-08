@@ -1,4 +1,4 @@
-﻿"""
+"""
 OS-level sandbox for bash and python execution using Docker.
 
 When enabled, run_bash and run_python execute inside an ephemeral Docker

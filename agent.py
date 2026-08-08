@@ -1,4 +1,4 @@
-﻿"""
+"""
 AI Agent - Main agent loop with STREAMING + THINKING indicators,
 plan-first reasoning, compact tool-call display, token/cost tracking,
 JSONL session logging, persistent memory, and exponential backoff.
@@ -40,6 +40,7 @@ from config import (
 )
 from tools import TOOL_DEFINITIONS, TOOL_FUNCTIONS
 from safety import guard
+from sandbox_session import session_manager
 
 
 # Best-effort token counting
@@ -241,7 +242,7 @@ The chat already shows tool calls and results. Do NOT restate them. Do NOT dump 
 
 **When the user uploads a file:**
 1. The file is copied to the workspace. Use `list_files` to confirm what's there.
-2. **Read it** before doing anything: `read_file` for text, `run_python` with python-docx/PyPDF2/etc. for binary.
+2. **View it** before doing anything: `view_file` for docx/pdf/pptx/images/xlsx, `read_file` for text files.
 3. Decide what to do based on actual content — never guess.
 
 **When the user says "improve / fix / make better":**
@@ -290,18 +291,29 @@ When a command is BLOCKED, explain why and suggest a safe alternative. NEVER try
 # 🛠️ AVAILABLE TOOLS
 
 1. **run_bash** — Execute shell commands in workspace (dangerous commands blocked)
-2. **read_file** — Read files (offset/max_bytes for large files; binary & credentials blocked)
-3. **write_file** — Create/overwrite files (workspace only)
-4. **edit_file** — Surgically replace a string in a file (workspace only) — prefer for small changes
-5. **list_files** — List files in workspace
-6. **web_search** — Real DuckDuckGo search (returns title/snippet/URL)
-7. **fetch_page** — Fetch a URL and return its main text
-8. **pip_install** — Install Python packages (strict spec validation)
-9. **run_python** — Execute Python code (risky patterns flagged; code still runs)
-10. **download_file** — Download a file from a URL into the workspace
-11. **image_search** — Search the web for images (returns URLs)
-12. **process_image** — Resize/crop/convert/clean image backgrounds (Pillow)
-13. **remove_background** — Remove image background (rembg AI; falls back to threshold)
+2. **read_file** — Read text files (offset/max_bytes for large files; binary & credentials blocked)
+3. **view_file** — View/preview ANY file: docx, pdf, pptx, xlsx, images, csv, text. USE THIS for binary files!
+4. **write_file** — Create/overwrite files (workspace only)
+5. **edit_file** — Surgically replace a string in a file (workspace only) — prefer for small changes
+6. **list_files** — List files in workspace
+7. **web_search** — Real DuckDuckGo search (returns title/snippet/URL)
+8. **fetch_page** — Fetch a URL and return its main text
+9. **pip_install** — Install Python packages in TEMPORARY sandbox (session-only, host untouched)
+10. **run_python** — Execute Python code (risky patterns flagged; code still runs)
+11. **download_file** — Download a file from a URL into the workspace
+12. **image_search** — Search the web for images (returns URLs)
+13. **process_image** — Resize/crop/convert/clean image backgrounds (Pillow)
+14. **remove_background** — Remove image background (rembg AI; falls back to threshold)
+
+# 📦 TEMPORARY SANDBOX & PACKAGE INSTALLATION
+
+All code execution (run_bash, run_python, pip_install) happens in a **temporary per-session sandbox**:
+- Packages installed via `pip_install` are available for the rest of the session
+- They are **NOT** installed on the user's host machine
+- Everything is cleaned up when the session ends
+- Core packages are pre-installed: Pillow, python-docx, python-pptx, openpyxl, PyPDF2, pdfplumber, requests, beautifulsoup4, pandas
+
+When you need a package that isn't pre-installed, just `pip_install` it — the user won't be affected.
 
 # 📋 OUTPUT STYLE
 
@@ -340,6 +352,10 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
     def cancel(self):
         self.cancel_requested = True
 
+    def cleanup_sandbox(self):
+        """Destroy the session's sandbox (called on clear/reset)."""
+        session_manager.destroy(self.session_id)
+
     def set_model(self, model: str):
         self.model = model
 
@@ -348,6 +364,12 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
 
     def get_metrics(self) -> dict:
         elapsed = time.time() - self.session_start
+        sandbox_info = {}
+        try:
+            sb = session_manager.get_or_create(self.session_id)
+            sandbox_info = sb.get_status()
+        except Exception:
+            pass
         return {
             "session_id": self.session_id,
             "elapsed_seconds": round(elapsed, 1),
@@ -359,6 +381,8 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
             "total_tokens": self.total_prompt_tokens + self.total_completion_tokens,
             "estimated_cost_usd": round(self.total_cost_usd, 4),
             "model": self.model,
+            "sandbox_mode": sandbox_info.get("mode", "unknown"),
+            "sandbox_packages": len(sandbox_info.get("packages_installed", [])),
         }
 
     # ===========================================================
@@ -438,6 +462,8 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
         if tool_name not in TOOL_FUNCTIONS:
             return {"status": "error", "output": f"Unknown tool: {tool_name}"}
         try:
+            # Inject session_id so tools use the session's sandbox
+            arguments["session_id"] = self.session_id
             return TOOL_FUNCTIONS[tool_name](**arguments)
         except Exception as e:
             return {"status": "error", "output": f"Tool raised: {type(e).__name__}: {e}"}
@@ -717,6 +743,8 @@ New direction: <what to do instead>
 
         # Track the current goal for self-evaluation
         self._current_goal = user_message[:200]
+        _eval_count = 0
+        _MAX_EVALS_PER_TURN = 3
 
         while self.iteration_count < MAX_ITERATIONS:
             # Wall-clock budget
@@ -932,7 +960,7 @@ New direction: <what to do instead>
             # Only run for write/edit/run_python actions (not reads/searches).
             action_tool_names = [tc["function"]["name"] for tc in tool_calls]
             producing_actions = {"write_file", "edit_file", "run_python", "run_bash", "pip_install", "process_image", "remove_background"}
-            should_evaluate = any(n in producing_actions for n in action_tool_names)
+            should_evaluate = any(n in producing_actions for n in action_tool_names) and _eval_count < _MAX_EVALS_PER_TURN
             if should_evaluate and not self.cancel_requested:
                 # Collect what was just done
                 last_results = []
@@ -957,6 +985,7 @@ New direction: <what to do instead>
                 full_response += eval_msg
                 yield full_response
 
+                _eval_count += 1
                 evaluation = self._evaluate_action(
                     client, self._current_goal, action_summary, result_text
                 )

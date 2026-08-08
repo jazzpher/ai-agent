@@ -1,4 +1,4 @@
-﻿gradio==5.50.0
+gradio==5.50.0
 openai==1.54.4
 httpx==0.27.2
 python-dotenv==1.0.1
@@ -6,8 +6,16 @@ duckduckgo-search==6.3.5
 trafilatura==1.12.2
 tiktoken==0.8.0
 Pillow==11.3.0
+# Document handling (for view_file tool)
+python-docx==1.1.2
+python-pptx==1.0.2
+openpyxl==3.1.5
+PyPDF2==3.0.1
+pdfplumber==0.11.4
+# Data processing
+pandas==2.2.3
+beautifulsoup4==4.12.3
 # rembg for AI-based background removal (optional; falls back to threshold)
 rembg==2.0.59
 # Pinned: gradio 5.x still uses HfFolder which was removed in huggingface_hub 1.0+
 huggingface_hub<1
-
