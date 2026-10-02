@@ -7,7 +7,7 @@ Isang AI agent na parang Arena.ai Agent Mode — may web interface, tools (bash,
 ### 📦 Temporary Sandbox (Session-Only Packages)
 - All code execution happens in a **temporary per-session sandbox**
 - Packages installed via `pip_install` are available for the rest of the session only
-- **Host machine is NEVER modified** — no permanent installs
+- **A venv isolates packages, not the host filesystem**. Use Docker for stronger isolation.
 - Auto-cleanup when session ends
 - Two modes: **venv** (default, no Docker needed) or **Docker** (optional, stronger isolation)
 
@@ -199,3 +199,74 @@ python test_safety.py
 ---
 
 Made with ❤️ at 🛡️ para sa safe na lokal na AI development!
+
+## Private phone access on Render free (new)
+
+This is a single-owner service, not a public agent or a multi-user app. The phone
+opens the Render HTTPS address in Safari; the code and tools run on Render, not
+on the iPhone. The model still runs at your chosen API provider. API free tiers
+have their own limits and this does not make them unlimited.
+
+### Deployment (not automatic)
+
+1. Review this branch/PR. `render.yaml` points to `feat/render-phone-access` and
+   disables automatic deploys. After merging, change the branch to `main` if you
+   want to deploy the merged code. Do not deploy plain `main` before these changes.
+2. In your Render account, create a Blueprint from this repository. Confirm the
+   service says **Free**, with no paid disk or paid database. No payment method
+   is needed for the free instance. If Render asks for payment or an upgrade,
+   stop rather than accepting it.
+3. Enter `AGENT_USERNAME` and a unique random `AGENT_PASSWORD` of at least 16
+   characters in Render's environment settings. Never put them in git or chat.
+   Non-loopback startup refuses to run without a strong login. `PORT` is supplied
+   by Render; `AGENT_HOST=0.0.0.0` listens on its assigned port.
+4. Open the service's HTTPS URL on your iPhone and sign in. Keep the password
+   private; anyone with it can run tools and access service files/API keys.
+5. Add provider settings using the password boxes under Settings, or use the
+   environment option below. Test with your own key, then send a small message.
+
+### Keep provider keys after sleep/restart
+
+UI saves are stored in `providers.json`, **which is temporary on Render free**.
+To keep provider settings across restarts, add `AGENT_PROVIDERS_JSON` in Render's
+Environment dashboard. Its value is a JSON array with up to three providers:
+
+```json
+[{"preset":"Groq","base_url":"https://api.groq.com/openai/v1","model":"YOUR_MODEL","api_key":"YOUR_KEY","enabled":true}]
+```
+
+Enter the real key only in that dashboard, not in this file. Local UI saves
+have priority while the service stays awake. After the local file is lost,
+it uses the environment settings again. Update the environment value to make
+changes durable. `NVIDIA_API_KEY` is also supported as the legacy env fallback.
+Keys are not sent back into password inputs, but the app/tools run as the same
+OS user and can access the process environment. This is **not secret isolation**.
+Do not put unrelated account credentials into this service.
+
+### Free-tier limits and safety
+
+- Sleeps after 15 idle minutes; the next request can take about a minute to wake.
+- Restart/redeploy/sleep deletes uploaded files, memory, local provider settings,
+  generated outputs and installed packages. Chat sessions are not durable either.
+- Free instances have 512 MB RAM / 0.1 CPU. Heavy image processing, pandas work or
+  lots of package installs can exhaust resources. This build omits optional
+  `rembg` and uses the existing simpler background-removal fallback.
+- This deploy uses a Python venv, **not Docker isolation**. Bash/Python can access
+  service files and keys. Login is an access gate, not a sandbox or approval system.
+  Use it only yourself, and avoid sensitive files or untrusted task instructions.
+- No uptime-pinging workaround is included. Render provides 750 free instance
+  hours per workspace/month plus bandwidth/build allowances; exceeding limits
+  without a payment method can suspend service/builds.
+- For durable memory/files, add external storage in a separate reviewed change,
+  or run on your own PC. A paid Render disk is a paid option, not part of this setup.
+- Use HTTPS outside localhost. Gradio password login is not MFA and does not
+  include our own rate-limiting layer. Change the env password and restart if it
+  is exposed. Do not share the login.
+
+For local-only use, `python app.py` keeps the existing `127.0.0.1:7860` defaults.
+For LAN access set `AGENT_HOST`, `AGENT_USERNAME`, and `AGENT_PASSWORD`; put TLS
+in front of it or use a private network. Do not enable Gradio public sharing.
+
+Sources: <https://render.com/docs/free>, <https://render.com/docs/blueprint-spec>.
+
+Tests: `python -m unittest test_server_settings test_provider_env`.
