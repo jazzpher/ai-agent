@@ -270,3 +270,23 @@ in front of it or use a private network. Do not enable Gradio public sharing.
 Sources: <https://render.com/docs/free>, <https://render.com/docs/blueprint-spec>.
 
 Tests: `python -m unittest test_server_settings test_provider_env`.
+
+### NVIDIA default and retry behavior
+
+The NVIDIA preset now defaults to `nvidia/nemotron-3-ultra-550b-a55b`.
+`AI_MODEL` and models already saved in provider settings are not overwritten.
+If an existing NVIDIA slot still uses the old model, edit that slot in Settings.
+Other provider presets are unchanged.
+
+All completion requests (chat, planning, review, and connection test) use a
+180-second request timeout with SDK retries disabled. Connection errors,
+timeouts, 429, and 500/502/503/504 responses get up to seven attempts, with
+2/4/8/16/32/13-second waits (75 seconds total). Chat falls back to the next
+configured provider only after those attempts are exhausted. Chat requests
+share the existing 600-second turn budget; it is a best-effort budget because
+an in-flight synchronous request cannot be interrupted immediately. Cancellation
+is checked during backoff, but an in-flight request may take up to its timeout.
+Authentication and other non-transient errors are not retried. A stream that has
+already started is never replayed automatically, avoiding duplicated text or
+tool calls. Test connection can therefore take several minutes during an outage.
+No API key is included in this change.
