@@ -12,7 +12,7 @@ NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
 NVIDIA_BASE_URL = os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
 
 # Default model - pwede mo palitan
-DEFAULT_MODEL = os.environ.get("AI_MODEL", "openai/gpt-oss-120b")
+DEFAULT_MODEL = os.environ.get("AI_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
 
 # Agent settings
 MAX_ITERATIONS = 20                    # Maximum tool calls per conversation turn

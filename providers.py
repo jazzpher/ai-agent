@@ -11,6 +11,8 @@ import json
 import os
 import time
 
+from api_retry import make_client, completion_with_retry
+
 from config import NVIDIA_API_KEY, NVIDIA_BASE_URL, DEFAULT_MODEL
 
 PROVIDERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "providers.json")
@@ -99,12 +101,11 @@ def test_connection(base_url: str, model: str, api_key: str) -> str:
     """One tiny completion. Returns a status line with latency. Never echoes the key."""
     if not (base_url and model and api_key):
         return "⚠️ Fill base URL, model and key first."
-    from openai import OpenAI
     start = time.time()
     try:
-        client = OpenAI(base_url=base_url, api_key=api_key, timeout=30, max_retries=0)
-        client.chat.completions.create(
-            model=model, max_tokens=8,
+        client = make_client(base_url, api_key)
+        completion_with_retry(client,
+            model=model, max_tokens=128,
             messages=[{"role": "user", "content": "Reply with: ok"}],
         )
         return f"✅ Connected. {int((time.time() - start) * 1000)} ms"
