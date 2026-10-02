@@ -16,6 +16,7 @@ from pathlib import Path
 
 import gradio as gr
 
+from server_settings import launch_settings
 from agent import AIAgent
 from config import NVIDIA_API_KEY, DEFAULT_MODEL, WORKSPACE_DIR
 from tools import get_sandbox_status, TOOL_FUNCTIONS
@@ -111,7 +112,7 @@ def format_sandbox_status(agent) -> str:
             f"- Session: `{status.get('session_id', '?')}`\n"
             f"- Uptime: {status.get('uptime_seconds', 0)}s\n"
             f"- Packages: {pkg_preview or 'installing...'}\n\n"
-            f"⚠️ Host machine is NOT modified. Install Docker for stronger isolation."
+            f"⚠️ A venv isolates packages, not files or secrets. Commands can modify this server."
         )
     else:
         return (
@@ -274,13 +275,16 @@ def start_chat(message, history, file_paths, agent: AIAgent):
 def build_providers_panel():
     """Provider/API-key settings (up to MAX_SLOTS, top = tried first)."""
     from providers import (PRESETS, MAX_SLOTS, load_providers, save_providers,
-                           mask_key, test_connection)
+                           mask_key, test_connection, environment_providers)
     saved = load_providers()
     saved += [{"preset": "Custom", "base_url": "", "model": "", "api_key": "", "enabled": False}] * (MAX_SLOTS - len(saved))
 
     with gr.Accordion("🔑 Providers & API keys", open=not any(p["api_key"] for p in saved)):
         gr.Markdown("Top = tried first. If it is rate-limited or down, the next one is used. "
-                    "Keys are stored only in `providers.json` on the machine running this app.")
+                    "UI saves go to `providers.json`. On Render free these are temporary. "
+                    "Set AGENT_PROVIDERS_JSON in Render Environment for settings that survive restarts.")
+        if environment_providers():
+            gr.Markdown("Environment provider settings are active. Local Save overrides them only until restart.")
         slots = []
         for i in range(MAX_SLOTS):
             s = saved[i]
@@ -357,6 +361,11 @@ def build_app():
         font-size: 12px;
         font-family: monospace;
     }
+    @media (max-width: 640px) {
+        .gradio-container { padding: 8px !important; }
+        #agent-chat { height: 50svh !important; min-height: 260px; }
+        input, textarea { font-size: 16px !important; }
+    }
     footer { display: none !important; }
     """
 
@@ -370,10 +379,15 @@ def build_app():
         gr.Markdown(
             """
             # 🤖 AI Agent
-            **Sandboxed local AI assistant** with streaming responses, file tools,
+            **Private AI assistant** with streaming responses, file tools,
             temporary sandbox, and a real Docker sandbox option.
             """
         )
+
+        if os.environ.get("RENDER", "").lower() == "true":
+            gr.Markdown("⚠️ Render free: local keys, memory, files and installed tools can disappear "
+                        "on restart or idle sleep. This service uses a venv, not Docker isolation. "
+                        "Use only your own login and do not add unrelated secrets.")
 
         # Per-session agent (created fresh for each browser session)
         agent_state = gr.State(lambda: AIAgent())
@@ -383,6 +397,7 @@ def build_app():
             with gr.Column(scale=4):
                 chatbot = gr.Chatbot(
                     label="Chat",
+                    elem_id="agent-chat",
                     height=550,
                     type="messages",   # Gradio 5.x required
                     allow_tags=False,  # Gradio 5.50+ default change
@@ -552,13 +567,12 @@ if __name__ == "__main__":
     print("=" * 50)
     print(f"  📂 Workspace: {WORKSPACE_DIR}")
     print(f"  🛡️  Safety: ACTIVE")
-    print(f"  🌐 URL: http://127.0.0.1:7860")
+    print("  🌐 Listener and authentication configured by environment")
     print("=" * 50)
 
+    settings = launch_settings()  # validate before constructing any app/session
     app = build_app()
-    app.launch(
-        server_name="127.0.0.1",
-        server_port=7860,
-        share=False,
-        inbrowser=True,
-    )
+    app.launch(**settings, blocked_paths=[
+        str(Path(__file__).parent / name)
+        for name in (".env", "providers.json", ".agent_logs", ".sandboxes", ".context")
+    ])

@@ -30,6 +30,29 @@ def _blank():
     return {"preset": "Custom", "base_url": "", "model": "", "api_key": "", "enabled": False}
 
 
+def environment_providers() -> list[dict]:
+    """Durable deployment configuration; never include raw JSON in errors."""
+    raw = os.environ.get("AGENT_PROVIDERS_JSON", "")
+    if not raw:
+        return []
+    try:
+        items = json.loads(raw)
+        if not isinstance(items, list) or not 1 <= len(items) <= MAX_SLOTS:
+            raise ValueError()
+        normalized = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError()
+            p = {**_blank(), **item}
+            if (not all(isinstance(p[k], str) for k in ("preset", "base_url", "model", "api_key"))
+                    or not isinstance(p["enabled"], bool) or p["preset"] not in PRESETS):
+                raise ValueError()
+            normalized.append(p)
+        return normalized
+    except (ValueError, TypeError):
+        raise ValueError("AGENT_PROVIDERS_JSON must be a JSON list of 1 to 3 valid provider objects.") from None
+
+
 def load_providers() -> list[dict]:
     """Saved providers (with keys). Falls back to NVIDIA_API_KEY from env/.env."""
     try:
@@ -38,6 +61,8 @@ def load_providers() -> list[dict]:
         items = [{**_blank(), **p} for p in items][:MAX_SLOTS]
     except (OSError, ValueError):
         items = []
+    if not items:
+        items = environment_providers()
     if not items and NVIDIA_API_KEY:
         base, model = PRESETS["NVIDIA NIM"]
         items = [{"preset": "NVIDIA NIM", "base_url": base, "model": model,

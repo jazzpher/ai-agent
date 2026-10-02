@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: private-ai-agent
+    runtime: python
+    plan: free
+    branch: feat/render-phone-access
+    autoDeploy: false
+    buildCommand: pip install -r requirements-render.txt
+    startCommand: python app.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: AGENT_HOST
+        value: 0.0.0.0
+      - key: AGENT_USERNAME
+        sync: false
+      - key: AGENT_PASSWORD
+        sync: false
+      - key: AGENT_SANDBOX_MODE
+        value: venv
+      - key: GRADIO_ANALYTICS_ENABLED
+        value: 'False'
