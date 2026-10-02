@@ -124,16 +124,13 @@ def format_sandbox_status(agent) -> str:
 # CHAT STREAMING
 # ============================================================
 
-def chat_stream(message: str, history: list, api_key: str, model: str, file_paths, agent: AIAgent):
+def chat_stream(message: str, history: list, file_paths, agent: AIAgent):
     """Stream a chat response. Uses Gradio 5 'messages' format."""
     if not message.strip() and not file_paths:
         yield history, ""
         return
 
-    if api_key:
-        agent.set_api_key(api_key)
-    if model:
-        agent.set_model(model)
+    agent.refresh_providers()  # picks up Settings changes without restart
 
     # Copy uploads into workspace
     processed_paths, upload_info = copy_uploads_to_workspace(file_paths)
@@ -193,7 +190,7 @@ def stop_chat(agent: AIAgent):
     return gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False, value="⏹️")
 
 
-def start_chat(message, history, api_key, model, file_paths, agent: AIAgent):
+def start_chat(message, history, file_paths, agent: AIAgent):
     """
     Streaming entry point. Yields 8 values per yield:
     (history, metrics, send_btn, stop_btn, file_status, uploaded_files, msg, agent)
@@ -243,7 +240,7 @@ def start_chat(message, history, api_key, model, file_paths, agent: AIAgent):
 
     # ---- Phase 2: Run the stream (keep Stop visible) ----
     try:
-        for h, metrics in chat_stream(message, history, api_key, model, file_paths, agent):
+        for h, metrics in chat_stream(message, history, file_paths, agent):
             yield (h, metrics, send_state, stop_state,
                    cur_status, list(file_paths or []), no_change, no_change)
     except Exception as e:
@@ -273,6 +270,63 @@ def start_chat(message, history, api_key, model, file_paths, agent: AIAgent):
 # ============================================================
 # UI BUILDER
 # ============================================================
+
+def build_providers_panel():
+    """Provider/API-key settings (up to MAX_SLOTS, top = tried first)."""
+    from providers import (PRESETS, MAX_SLOTS, load_providers, save_providers,
+                           mask_key, test_connection)
+    saved = load_providers()
+    saved += [{"preset": "Custom", "base_url": "", "model": "", "api_key": "", "enabled": False}] * (MAX_SLOTS - len(saved))
+
+    with gr.Accordion("🔑 Providers & API keys", open=not any(p["api_key"] for p in saved)):
+        gr.Markdown("Top = tried first. If it is rate-limited or down, the next one is used. "
+                    "Keys are stored only in `providers.json` on the machine running this app.")
+        slots = []
+        for i in range(MAX_SLOTS):
+            s = saved[i]
+            with gr.Group():
+                gr.Markdown(f"**Provider {i + 1}**")
+                preset = gr.Dropdown(list(PRESETS), value=s["preset"], label="Preset")
+                base = gr.Textbox(value=s["base_url"], label="Base URL")
+                model = gr.Textbox(value=s["model"], label="Model")
+                key = gr.Textbox(label="API key", type="password",
+                                 placeholder="leave empty to keep saved key")
+                hint = gr.Markdown(f"Key: {mask_key(s['api_key'])}")
+                on = gr.Checkbox(value=s["enabled"], label="Enabled")
+                test_btn = gr.Button("Test connection", size="sm")
+                result = gr.Markdown()
+            preset.change(lambda n: PRESETS[n] if n != "Custom" else (gr.update(), gr.update()),
+                          preset, [base, model])
+            slots.append((preset, base, model, key, hint, on, test_btn, result))
+
+        def _test(base_url, model_name, typed_key, idx):
+            k = typed_key or (load_providers() + [{}] * MAX_SLOTS)[idx].get("api_key", "")
+            return test_connection(base_url.strip(), model_name.strip(), k)
+
+        for i, (preset, base, model, key, hint, on, test_btn, result) in enumerate(slots):
+            test_btn.click(lambda b, m, k, i=i: _test(b, m, k, i), [base, model, key], result,
+                           show_progress="full")
+
+        def _save(*vals):
+            old = load_providers() + [{}] * MAX_SLOTS
+            items, hints = [], []
+            for i in range(MAX_SLOTS):
+                preset, base_url, model_name, typed, enabled = vals[i * 5:(i + 1) * 5]
+                k = typed.strip() or old[i].get("api_key", "")
+                items.append({"preset": preset, "base_url": base_url.strip(),
+                              "model": model_name.strip(), "api_key": k, "enabled": bool(enabled)})
+                hints += [gr.update(value=""), f"Key: {mask_key(k)}"]
+            save_providers(items)
+            return hints + ["✅ Saved."]
+
+        save_btn = gr.Button("Save providers", variant="primary")
+        status = gr.Markdown()
+        ins, outs = [], []
+        for preset, base, model, key, hint, on, _, _ in slots:
+            ins += [preset, base, model, key, on]
+            outs += [key, hint]
+        save_btn.click(_save, ins, outs + [status], show_progress="full")
+
 
 def build_app():
     theme = gr.themes.Soft(primary_hue="blue", secondary_hue="green")
@@ -380,17 +434,7 @@ def build_app():
             # ---- RIGHT: settings + status ----
             with gr.Column(scale=1):
                 gr.Markdown("### ⚙️ Settings")
-                api_key_input = gr.Textbox(
-                    label="NVIDIA API Key",
-                    placeholder="nvapi-...",
-                    type="password",
-                    value=NVIDIA_API_KEY,
-                )
-                model_input = gr.Textbox(
-                    label="Model",
-                    value=DEFAULT_MODEL,
-                    info="e.g. openai/gpt-oss-120b",
-                )
+                build_providers_panel()
 
                 gr.Markdown("---")
 
@@ -446,7 +490,7 @@ def build_app():
         )
 
         # Main chat event
-        chat_inputs = [msg, chatbot, api_key_input, model_input, uploaded_files, agent_state]
+        chat_inputs = [msg, chatbot, uploaded_files, agent_state]
         # Outputs: chatbot (history), metrics, send_btn, stop_btn,
         #          file_status, uploaded_files (clear on exit),
         #          msg (clear textbox on exit), agent_state

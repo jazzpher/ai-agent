@@ -40,3 +40,6 @@ Thumbs.db
 *.pem
 *.key
 
+
+# Provider settings (contain API keys)
+providers.json

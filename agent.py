@@ -143,6 +143,8 @@ class AIAgent:
         self.api_key = api_key or NVIDIA_API_KEY
         self.model = model or DEFAULT_MODEL
         self.base_url = base_url or NVIDIA_BASE_URL
+        self._providers: list = []
+        self._provider_idx = 0
         self.messages: list = []
         self.iteration_count = 0
         self.reasoning_effort = "high"
@@ -380,6 +382,27 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
 
     def set_api_key(self, api_key: str):
         self.api_key = api_key
+
+    def refresh_providers(self):
+        """Reload provider list (providers.json / env) and select the first one."""
+        from providers import active_providers
+        self._providers = active_providers()
+        self._provider_idx = 0
+        if self._providers:
+            self._apply_provider(self._providers[0])
+
+    def _apply_provider(self, p: dict):
+        self.base_url, self.api_key, self.model = p["base_url"], p["api_key"], p["model"]
+
+    def _switch_provider(self) -> bool:
+        """Move to the next provider in fallback order. False if none left."""
+        provs = getattr(self, "_providers", [])
+        if self._provider_idx + 1 >= len(provs):
+            return False
+        self._provider_idx += 1
+        self._apply_provider(provs[self._provider_idx])
+        self._log("provider_fallback", provider_index=self._provider_idx, model=self.model)
+        return True
 
     def get_metrics(self) -> dict:
         elapsed = time.time() - self.session_start
@@ -718,7 +741,7 @@ New direction: <what to do instead>
     def chat_stream(self, user_message: str, uploaded_files_info: str = ""):
         """Process a user message. Yields full-response snapshots (string)."""
         if not self.api_key:
-            yield "⚠️ Walang API key! I-set mo muna ang NVIDIA API key sa Settings."
+            yield "⚠️ Walang API key! Buksan ang 🔑 Providers sa Settings at i-save ang key mo."
             return
 
         self.cancel_requested = False
@@ -821,7 +844,16 @@ New direction: <what to do instead>
                     break
                 except (APITimeoutError, APIConnectionError, RateLimitError) as e:
                     self.errors += 1
-                    self._log("transient_error", attempt=attempt, error=str(e))
+                    self._log("transient_error", attempt=attempt, error=type(e).__name__)
+                    if attempt >= 1 and self._switch_provider():
+                        full_response += f"\n\n🔁 Switching to fallback model `{self.model}`…"
+                        yield full_response
+                        client = self._get_client()
+                        kwargs["model"] = self.model
+                        kwargs.pop("extra_body", None)
+                        if _model_supports_reasoning(self.model):
+                            kwargs["extra_body"] = {"chat_template_kwargs": {"reasoning_effort": self.reasoning_effort}}
+                        continue
                     if attempt == 3:
                         full_response += f"\n\n❌ API unavailable after 4 attempts: {e}"
                         yield full_response

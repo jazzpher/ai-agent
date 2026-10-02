@@ -73,9 +73,10 @@ python test_safety.py
 
 ## 🎯 Paggamit
 
-1. I-paste ang **NVIDIA API key** sa Settings panel
-2. Piliin ang **model** (default: `openai/gpt-oss-120b`)
-3. Mag-type ng request — pwede Tagalog!
+1. Buksan ang **🔑 Providers & API keys** sa Settings. Pumili ng preset (NVIDIA NIM, Groq, Gemini, OpenRouter, Custom), i-paste ang key, i-click ang **Test connection**, tapos **Save providers**
+2. Hanggang 3 provider; ang nasa taas ang una. Kung rate-limited o down, lilipat sa susunod
+3. Ang keys ay nasa `providers.json` lang (gitignored, hindi nilo-log, naka-mask sa UI). Gumagana pa rin ang `NVIDIA_API_KEY` sa `.env`
+4. Mag-type ng request — pwede Tagalog!
 
 ### Example Prompts:
 
