@@ -248,6 +248,7 @@ def _view_image(path: str, ext: str, file_size: int) -> dict:
             ),
             "file_type": "image",
             "path": path,
+            "image_path": path,
             "width": width,
             "height": height,
         }
@@ -1190,4 +1191,4 @@ TOOL_FUNCTIONS = {
     "process_image": process_image,
     "remove_background": remove_background,
     "recall_step": recall_step,
-}
+               }
