@@ -28,8 +28,13 @@ PRESETS = {
 }
 
 
+# Whether the model can look at images. Only a starting guess; set it per slot in the UI.
+PRESET_VISION = {"Gemini": True}
+
+
 def _blank():
-    return {"preset": "Custom", "base_url": "", "model": "", "api_key": "", "enabled": False}
+    return {"preset": "Custom", "base_url": "", "model": "", "api_key": "", "enabled": False,
+            "vision": False}
 
 
 def environment_providers() -> list[dict]:
@@ -47,7 +52,8 @@ def environment_providers() -> list[dict]:
                 raise ValueError()
             p = {**_blank(), **item}
             if (not all(isinstance(p[k], str) for k in ("preset", "base_url", "model", "api_key"))
-                    or not isinstance(p["enabled"], bool) or p["preset"] not in PRESETS):
+                    or not isinstance(p["enabled"], bool) or not isinstance(p["vision"], bool)
+                    or p["preset"] not in PRESETS):
                 raise ValueError()
             normalized.append(p)
         return normalized
@@ -112,3 +118,132 @@ def test_connection(base_url: str, model: str, api_key: str) -> str:
     except Exception as e:  # message from the SDK never contains the key
         msg = str(e).replace(api_key, "***")
         return f"❌ {type(e).__name__} after {int((time.time() - start) * 1000)} ms: {msg[:200]}"
+
+
+# ---------------------------------------------------------------
+# Model list and benchmark. Both make real API calls, but only when
+# the user presses the button. Nothing here runs at startup.
+# ---------------------------------------------------------------
+
+def list_models(base_url: str, api_key: str, client=None) -> list[str]:
+    """Model ids from GET {base_url}/models, sorted. Raises on failure."""
+    if not (base_url and api_key):
+        raise ValueError("Fill base URL and key first.")
+    client = client or make_client(base_url, api_key)
+    last = None
+    for attempt, delay in enumerate((0, 3, 8)):
+        if delay:
+            time.sleep(delay)
+        try:
+            data = client.models.list()
+            ids = sorted({getattr(m, "id", "") for m in getattr(data, "data", data) if getattr(m, "id", "")})
+            return ids
+        except Exception as e:
+            from api_retry import is_transient
+            last = e
+            if not is_transient(e):
+                break
+    raise last
+
+
+_TOOL = [{"type": "function", "function": {
+    "name": "get_weather", "description": "Get the weather for a city",
+    "parameters": {"type": "object", "properties": {"city": {"type": "string"}},
+                   "required": ["city"]}}}]
+
+
+def _strip_fences(text: str) -> str:
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1]
+        text = text.rsplit("```", 1)[0]
+    return text.strip()
+
+
+def _check_instruction(msg) -> bool:
+    return (msg.content or "").strip().strip(".!").upper() == "PONG"
+
+
+def _check_json(msg) -> bool:
+    try:
+        data = json.loads(_strip_fences(msg.content))
+        return data.get("total") == 42 and data.get("items") == ["x", "y"]
+    except Exception:
+        return False
+
+
+def _check_tool_call(msg) -> bool:
+    try:
+        call = msg.tool_calls[0]
+        args = json.loads(call.function.arguments)
+        return call.function.name == "get_weather" and "manila" in str(args.get("city", "")).lower()
+    except Exception:
+        return False
+
+
+def _check_code(msg) -> bool:
+    import ast
+    try:
+        tree = ast.parse(_strip_fences(msg.content))
+    except SyntaxError:
+        return False
+    return any(isinstance(n, ast.FunctionDef) and n.name == "add"
+               and any(isinstance(x, ast.Return) for x in ast.walk(n)) for n in ast.walk(tree))
+
+
+def _check_tagalog(msg) -> bool:
+    text = (msg.content or "").lower()
+    words = set(text.replace(",", " ").replace(".", " ").split())
+    markers = {"ang", "ay", "na", "sa", "kulay", "asul", "langit", "ng", "mga", "umaga"}
+    return 0 < len(text) < 400 and len(words & markers) >= 2
+
+
+BENCHMARK_TASKS = [
+    ("Sundin ang instruction", [{"role": "user", "content": "Reply with exactly the word PONG and nothing else."}],
+     None, _check_instruction),
+    ("JSON lang", [{"role": "user", "content": 'Return only a JSON object: {"total": 17+25 as a number, "items": ["x","y"]}. No other text.'}],
+     None, _check_json),
+    ("Tool call", [{"role": "user", "content": "What is the weather in Manila? Use the tool."}],
+     _TOOL, _check_tool_call),
+    ("Python code", [{"role": "user", "content": "Write a Python function named add(a, b) that returns a+b. Return only the code."}],
+     None, _check_code),
+    ("Tagalog", [{"role": "user", "content": "Sumagot sa Tagalog sa isang maikling pangungusap: anong kulay ng langit sa umaga?"}],
+     None, _check_tagalog),
+]
+
+
+def benchmark_model(base_url: str, model: str, api_key: str, client=None,
+                    per_task_seconds: float = 90.0) -> list[dict]:
+    """Run the fixed mini-suite. 5 small requests. Never echoes the key."""
+    if not (base_url and model and api_key):
+        raise ValueError("Fill base URL, model and key first.")
+    client = client or make_client(base_url, api_key)
+    results = []
+    for name, messages, tools, check in BENCHMARK_TASKS:
+        start = time.time()
+        row = {"task": name, "passed": False, "ms": 0, "tokens": None, "error": ""}
+        try:
+            kwargs = dict(model=model, messages=messages, max_tokens=300, temperature=0)
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+            resp = completion_with_retry(client, deadline=time.monotonic() + per_task_seconds, **kwargs)
+            row["passed"] = bool(check(resp.choices[0].message))
+            usage = getattr(resp, "usage", None)
+            row["tokens"] = getattr(usage, "completion_tokens", None) if usage else None
+        except Exception as e:
+            row["error"] = f"{type(e).__name__}: {str(e).replace(api_key, '***')[:120]}"
+        row["ms"] = int((time.time() - start) * 1000)
+        results.append(row)
+    return results
+
+
+def format_benchmark(model: str, results: list[dict]) -> str:
+    passed = sum(1 for r in results if r["passed"])
+    total_ms = sum(r["ms"] for r in results)
+    lines = [f"**Benchmark: `{model}`** - {passed}/{len(results)} pumasa, {total_ms / 1000:.1f}s total", "",
+             "| Task | Result | Time |", "|---|---|---|"]
+    for r in results:
+        mark = "✅" if r["passed"] else ("❌ " + r["error"] if r["error"] else "❌")
+        lines.append(f"| {r['task']} | {mark} | {r['ms'] / 1000:.1f}s |")
+    return "\n".join(lines)
