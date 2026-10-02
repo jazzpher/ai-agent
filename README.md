@@ -290,3 +290,10 @@ Authentication and other non-transient errors are not retried. A stream that has
 already started is never replayed automatically, avoiding duplicated text or
 tool calls. Test connection can therefore take several minutes during an outage.
 No API key is included in this change.
+
+## Harness safety and smarts
+
+- **Approval gate**: without Docker, risky commands and every `pip_install` pause for Approve/Deny in the UI (120s no answer = deny). `AGENT_APPROVAL=auto|on|off` (default auto), `AGENT_APPROVAL_TIMEOUT` seconds. Blocked commands stay blocked.
+- **Answer check**: after tool use, the model checks its final answer against the tool results (max 2 fix rounds). `AGENT_VERIFY=off` disables it.
+- **Vision flag**: each provider slot has a Vision checkbox. Images from `view_file` are sent only when it is on.
+- **Models + benchmark**: "Fetch models" lists `/models`; "Benchmark (5 calls)" runs five small requests and shows pass/fail and time. Both only run when you click.
