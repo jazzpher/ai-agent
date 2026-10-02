@@ -1191,4 +1191,4 @@ TOOL_FUNCTIONS = {
     "process_image": process_image,
     "remove_background": remove_background,
     "recall_step": recall_step,
-               }
+}
