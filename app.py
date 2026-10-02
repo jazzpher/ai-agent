@@ -21,6 +21,7 @@ from agent import AIAgent
 from config import NVIDIA_API_KEY, DEFAULT_MODEL, WORKSPACE_DIR
 from tools import get_sandbox_status, TOOL_FUNCTIONS
 from sandbox_session import session_manager
+from approvals import gate as approval_gate, approval_mode
 
 
 # ============================================================
@@ -90,6 +91,14 @@ def format_metrics(agent) -> str:
 # SANDBOX STATUS
 # ============================================================
 
+def approval_warning() -> str:
+    mode = approval_mode()
+    if mode == "off":
+        return "🚨 Walang Docker at **naka-off ang approval** (AGENT_APPROVAL=off). Risky commands tatakbo agad."
+    return ("🔐 Walang Docker: risky commands (delete, overwrite, pip install, atbp.) "
+            "ay hihingi muna ng approval mo.")
+
+
 def format_sandbox_status(agent) -> str:
     status = get_sandbox_status(agent.session_id)
     mode = status.get("mode", "unknown")
@@ -112,7 +121,8 @@ def format_sandbox_status(agent) -> str:
             f"- Session: `{status.get('session_id', '?')}`\n"
             f"- Uptime: {status.get('uptime_seconds', 0)}s\n"
             f"- Packages: {pkg_preview or 'installing...'}\n\n"
-            f"⚠️ A venv isolates packages, not files or secrets. Commands can modify this server."
+            f"⚠️ A venv isolates packages, not files or secrets. Commands can modify this server.\n\n"
+            + approval_warning()
         )
     else:
         return (
@@ -274,8 +284,9 @@ def start_chat(message, history, file_paths, agent: AIAgent):
 
 def build_providers_panel():
     """Provider/API-key settings (up to MAX_SLOTS, top = tried first)."""
-    from providers import (PRESETS, MAX_SLOTS, load_providers, save_providers,
-                           mask_key, test_connection, environment_providers)
+    from providers import (PRESETS, PRESET_VISION, MAX_SLOTS, load_providers, save_providers,
+                           mask_key, test_connection, environment_providers,
+                           list_models, benchmark_model, format_benchmark)
     saved = load_providers()
     saved += [{"preset": "Custom", "base_url": "", "model": "", "api_key": "", "enabled": False}] * (MAX_SLOTS - len(saved))
 
@@ -297,28 +308,62 @@ def build_providers_panel():
                                  placeholder="leave empty to keep saved key")
                 hint = gr.Markdown(f"Key: {mask_key(s['api_key'])}")
                 on = gr.Checkbox(value=s["enabled"], label="Enabled")
+                vision = gr.Checkbox(value=s.get("vision", False), label="Vision (model can see images)")
                 test_btn = gr.Button("Test connection", size="sm")
+                with gr.Row():
+                    fetch_btn = gr.Button("Fetch models", size="sm")
+                    bench_btn = gr.Button("Benchmark (5 calls)", size="sm")
+                models_dd = gr.Dropdown([], label="Models from provider", allow_custom_value=True,
+                                        interactive=True)
                 result = gr.Markdown()
-            preset.change(lambda n: PRESETS[n] if n != "Custom" else (gr.update(), gr.update()),
-                          preset, [base, model])
-            slots.append((preset, base, model, key, hint, on, test_btn, result))
+            preset.change(lambda n: (*PRESETS[n], PRESET_VISION.get(n, False)) if n != "Custom"
+                          else (gr.update(), gr.update(), gr.update()),
+                          preset, [base, model, vision])
+            models_dd.input(lambda v: v or gr.update(), models_dd, model)
+            slots.append((preset, base, model, key, hint, on, vision, test_btn, result,
+                          fetch_btn, bench_btn, models_dd))
+
+        def _saved_key(typed_key, idx):
+            return typed_key or (load_providers() + [{}] * MAX_SLOTS)[idx].get("api_key", "")
+
+        def _fetch_models(base_url, typed_key, idx):
+            k = _saved_key(typed_key, idx)
+            try:
+                ids = list_models(base_url.strip(), k)
+            except Exception as e:
+                return gr.update(), f"❌ Hindi makuha ang models: {type(e).__name__}: {str(e).replace(k, '***')[:200]}"
+            return gr.update(choices=ids), f"✅ {len(ids)} models. Pumili sa dropdown para ilagay sa Model."
+
+        def _benchmark(base_url, model_name, typed_key, idx):
+            k = _saved_key(typed_key, idx)
+            try:
+                return format_benchmark(model_name.strip(),
+                                        benchmark_model(base_url.strip(), model_name.strip(), k))
+            except Exception as e:
+                return f"❌ {type(e).__name__}: {str(e).replace(k, '***')[:200]}"
 
         def _test(base_url, model_name, typed_key, idx):
             k = typed_key or (load_providers() + [{}] * MAX_SLOTS)[idx].get("api_key", "")
             return test_connection(base_url.strip(), model_name.strip(), k)
 
-        for i, (preset, base, model, key, hint, on, test_btn, result) in enumerate(slots):
+        for i, (preset, base, model, key, hint, on, vision, test_btn, result,
+                fetch_btn, bench_btn, models_dd) in enumerate(slots):
             test_btn.click(lambda b, m, k, i=i: _test(b, m, k, i), [base, model, key], result,
                            show_progress="full")
+            fetch_btn.click(lambda b, k, i=i: _fetch_models(b, k, i), [base, key], [models_dd, result],
+                            show_progress="full")
+            bench_btn.click(lambda b, m, k, i=i: _benchmark(b, m, k, i), [base, model, key], result,
+                            show_progress="full")
 
         def _save(*vals):
             old = load_providers() + [{}] * MAX_SLOTS
             items, hints = [], []
             for i in range(MAX_SLOTS):
-                preset, base_url, model_name, typed, enabled = vals[i * 5:(i + 1) * 5]
+                preset, base_url, model_name, typed, enabled, has_vision = vals[i * 6:(i + 1) * 6]
                 k = typed.strip() or old[i].get("api_key", "")
                 items.append({"preset": preset, "base_url": base_url.strip(),
-                              "model": model_name.strip(), "api_key": k, "enabled": bool(enabled)})
+                              "model": model_name.strip(), "api_key": k, "enabled": bool(enabled),
+                              "vision": bool(has_vision)})
                 hints += [gr.update(value=""), f"Key: {mask_key(k)}"]
             save_providers(items)
             return hints + ["✅ Saved."]
@@ -326,8 +371,8 @@ def build_providers_panel():
         save_btn = gr.Button("Save providers", variant="primary")
         status = gr.Markdown()
         ins, outs = [], []
-        for preset, base, model, key, hint, on, _, _ in slots:
-            ins += [preset, base, model, key, on]
+        for preset, base, model, key, hint, on, vision, *_ in slots:
+            ins += [preset, base, model, key, on, vision]
             outs += [key, hint]
         save_btn.click(_save, ins, outs + [status], show_progress="full")
 
@@ -395,6 +440,10 @@ def build_app():
         with gr.Row():
             # ---- LEFT: chat + input ----
             with gr.Column(scale=4):
+                approval_md = gr.Markdown(visible=False, elem_id="approval-banner")
+                with gr.Row(visible=False) as approval_row:
+                    approve_btn = gr.Button("✅ Approve", variant="primary")
+                    deny_btn = gr.Button("❌ Deny", variant="stop")
                 chatbot = gr.Chatbot(
                     label="Chat",
                     elem_id="agent-chat",
@@ -524,6 +573,26 @@ def build_app():
             inputs=chat_inputs,
             outputs=chat_outputs,
         )
+
+        # Approval banner: poll for a pending request from the running agent
+        def poll_approval(agent: AIAgent):
+            text = approval_gate.pending(agent.session_id)
+            if not text:
+                return gr.update(visible=False), gr.update(visible=False)
+            return (gr.update(value=f"### ⏸️ Approval needed\n```\n{text}\n```", visible=True),
+                    gr.update(visible=True))
+
+        def answer_approval(agent: AIAgent, approved: bool):
+            approval_gate.answer(agent.session_id, approved)
+            return gr.update(visible=False), gr.update(visible=False)
+
+        approval_timer = gr.Timer(1.0)
+        approval_timer.tick(poll_approval, inputs=[agent_state], outputs=[approval_md, approval_row],
+                            show_progress="hidden")
+        approve_btn.click(lambda a: answer_approval(a, True), inputs=[agent_state],
+                          outputs=[approval_md, approval_row])
+        deny_btn.click(lambda a: answer_approval(a, False), inputs=[agent_state],
+                       outputs=[approval_md, approval_row])
 
         # Stop
         stop_btn.click(
