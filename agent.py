@@ -21,7 +21,7 @@ import time
 import uuid
 from datetime import datetime
 
-from openai import OpenAI, APITimeoutError, APIConnectionError, RateLimitError
+from api_retry import make_client, completion_with_retry, is_transient, CompletionCancelled
 
 from config import (
     NVIDIA_API_KEY,
@@ -500,7 +500,7 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
     # ===========================================================
 
     def _get_client(self):
-        return OpenAI(base_url=self.base_url, api_key=self.api_key)
+        return make_client(self.base_url, self.api_key)
 
     def _execute_tool(self, tool_name: str, arguments: dict) -> dict:
         if tool_name not in TOOL_FUNCTIONS:
@@ -574,7 +574,9 @@ New direction: <what to do instead>
                 "chat_template_kwargs": {"reasoning_effort": "medium"}
             }
         try:
-            resp = client.chat.completions.create(**kwargs)
+            resp = completion_with_retry(
+                client, cancelled=lambda: self.cancel_requested,
+                deadline=getattr(self, "_completion_deadline", None), **kwargs)
             evaluation = (resp.choices[0].message.content or "").strip()
             if resp.usage:
                 self.total_prompt_tokens += resp.usage.prompt_tokens or 0
@@ -701,7 +703,9 @@ New direction: <what to do instead>
             }
 
         try:
-            resp = client.chat.completions.create(**kwargs)
+            resp = completion_with_retry(
+                client, cancelled=lambda: self.cancel_requested,
+                deadline=getattr(self, "_completion_deadline", None), **kwargs)
             analysis = resp.choices[0].message.content or ""
             self._log(
                 "analyze_pass",
@@ -766,6 +770,7 @@ New direction: <what to do instead>
         self.iteration_count = 0
         full_response = ""
         start_time = time.time()
+        self._completion_deadline = time.monotonic() + MAX_TOTAL_SECONDS
         supports_reasoning = _model_supports_reasoning(self.model)
         self._log("user_message", content_len=len(user_message), has_uploads=bool(uploaded_files_info))
         self._load_memory()
@@ -836,45 +841,45 @@ New direction: <what to do instead>
                     "chat_template_kwargs": {"reasoning_effort": self.reasoning_effort}
                 }
 
-            # ---- Streaming with exponential backoff ----
+            # Retry only before streaming starts. Partial streams are not replayed.
             stream = None
-            for attempt, backoff in enumerate([1, 2, 4, 8]):
+            while stream is None:
                 try:
-                    stream = client.chat.completions.create(**kwargs)
-                    break
-                except (APITimeoutError, APIConnectionError, RateLimitError) as e:
-                    self.errors += 1
-                    self._log("transient_error", attempt=attempt, error=type(e).__name__)
-                    if attempt >= 1 and self._switch_provider():
-                        full_response += f"\n\n🔁 Switching to fallback model `{self.model}`…"
-                        yield full_response
-                        client = self._get_client()
-                        kwargs["model"] = self.model
-                        kwargs.pop("extra_body", None)
-                        if _model_supports_reasoning(self.model):
-                            kwargs["extra_body"] = {"chat_template_kwargs": {"reasoning_effort": self.reasoning_effort}}
-                        continue
-                    if attempt == 3:
-                        full_response += f"\n\n❌ API unavailable after 4 attempts: {e}"
-                        yield full_response
-                        return
-                    time.sleep(backoff)
+                    stream = completion_with_retry(
+                        client, cancelled=lambda: self.cancel_requested,
+                        deadline=self._completion_deadline,
+                        on_retry=lambda attempt, delay, error: self._log(
+                            "transient_error", attempt=attempt, delay=delay, error=error),
+                        **kwargs)
+                except CompletionCancelled:
+                    full_response += "\n\nOperation cancelled by user."
+                    yield full_response
+                    return
                 except TypeError as e:
-                    # Some models reject reasoning_effort — retry without it.
                     if "extra_body" in kwargs or "reasoning_effort" in kwargs:
                         self._log("reasoning_unsupported", error=str(e))
                         kwargs.pop("extra_body", None)
                         kwargs.pop("reasoning_effort", None)
                         continue
                     self.errors += 1
-                    self._log("fatal_error", error=str(e))
                     full_response += f"\n\n❌ API Error: {e}"
                     yield full_response
                     return
                 except Exception as e:
                     self.errors += 1
-                    self._log("fatal_error", error=str(e))
-                    full_response += f"\n\n❌ API Error: {e}"
+                    if (is_transient(e) and time.monotonic() < self._completion_deadline
+                            and self._switch_provider()):
+                        full_response += f"\n\n🔁 Switching to fallback model `{self.model}`…"
+                        yield full_response
+                        client = self._get_client()
+                        kwargs["model"] = self.model
+                        supports_reasoning = _model_supports_reasoning(self.model)
+                        kwargs.pop("extra_body", None)
+                        if supports_reasoning:
+                            kwargs["extra_body"] = {"chat_template_kwargs": {"reasoning_effort": self.reasoning_effort}}
+                        continue
+                    self._log("api_failed", error=type(e).__name__)
+                    full_response += f"\n\n❌ API unavailable: {e}"
                     yield full_response
                     return
 
@@ -1132,4 +1137,3 @@ New direction: <what to do instead>
         self.messages.append({"role": "assistant", "content": summary})
         self._log("turn_end", reason="max_iterations_or_budget", iterations=self.iteration_count)
         yield full_response
-
