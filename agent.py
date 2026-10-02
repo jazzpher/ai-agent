@@ -42,6 +42,14 @@ from tools import TOOL_DEFINITIONS, TOOL_FUNCTIONS
 from safety import guard
 from sandbox_session import session_manager
 from context_manager import ContextManager
+from vision import image_data_uri, strip_old_images
+from approvals import gate as approval_gate, needs_approval
+
+MAX_VERIFY_ROUNDS = 2
+
+
+def verify_enabled() -> bool:
+    return os.environ.get("AGENT_VERIFY", "on").strip().lower() not in ("off", "0", "false", "no")
 
 
 # Best-effort token counting
@@ -145,6 +153,7 @@ class AIAgent:
         self.base_url = base_url or NVIDIA_BASE_URL
         self._providers: list = []
         self._provider_idx = 0
+        self.vision = False  # set per provider; text-only models never get images
         self.messages: list = []
         self.iteration_count = 0
         self.reasoning_effort = "high"
@@ -393,6 +402,7 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
 
     def _apply_provider(self, p: dict):
         self.base_url, self.api_key, self.model = p["base_url"], p["api_key"], p["model"]
+        self.vision = bool(p.get("vision", False))
 
     def _switch_provider(self) -> bool:
         """Move to the next provider in fallback order. False if none left."""
@@ -502,6 +512,29 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
     def _get_client(self):
         return make_client(self.base_url, self.api_key)
 
+    def _approval_prompt(self, tool_name: str, args: dict):
+        """Text to show the user when this call needs approval, else None."""
+        try:
+            if tool_name == "run_bash":
+                check = guard.validate_command(args.get("command", ""))
+                shown = args.get("command", "")
+            elif tool_name == "run_python":
+                check = guard.validate_python_code(args.get("code", ""))
+                shown = args.get("code", "")
+            elif tool_name == "pip_install":
+                check = {"risk_level": "risky"}
+                shown = args.get("package", "")
+            else:
+                return None
+            if not check.get("safe", True):
+                return None  # blocked stays blocked; the tool reports it
+            mode = session_manager.get_or_create(self.session_id).mode
+            if needs_approval(tool_name, check.get("risk_level", "safe"), mode):
+                return f"{tool_name}: {str(shown)[:500]}", mode
+        except Exception as e:
+            self._log("approval_check_failed", error=type(e).__name__)
+        return None
+
     def _execute_tool(self, tool_name: str, arguments: dict) -> dict:
         if tool_name not in TOOL_FUNCTIONS:
             return {"status": "error", "output": f"Unknown tool: {tool_name}"}
@@ -546,6 +579,49 @@ New direction: <what to do instead>
 - "REPLAN" is rare — only when the fundamental approach is wrong.
 - Don't propose improvements the user didn't ask for. Stay focused on the goal.
 - Match the user's language."""
+
+    _VERIFY_SYSTEM = """You check an AI agent's final answer before the user sees it as finished. Compare the answer with the user's goal and the tool evidence.
+
+Reply with EXACTLY one of:
+
+PASS
+
+or
+
+FAIL
+Issue: <the specific problem: claim not backed by tool output, ignored error, missing part of the request, file not created, etc.>
+Fix: <one concrete next step>
+
+RULES
+- PASS unless there is a real, specific problem. Do not nitpick style or wording.
+- A claim like "created X" or "tests pass" needs matching evidence in the tool results.
+- If a tool result shows an error or a denied/blocked command that the answer ignores, FAIL.
+- Match the user's language."""
+
+    def _verify_final(self, client, goal: str, answer: str) -> str:
+        """Ask the model to check its own final answer. Never blocks on failure."""
+        evidence = "\n".join(
+            f"- {name} [{status}]: {out}" for name, status, out in self._turn_evidence[-8:]
+        ) or "(no tool calls)"
+        messages = [
+            {"role": "system", "content": self._VERIFY_SYSTEM},
+            {"role": "user", "content": (
+                f"**User goal:** {goal}\n\n**Tool evidence (latest):**\n{evidence[:3000]}\n\n"
+                f"**Final answer:**\n{answer[:2000]}"
+            )},
+        ]
+        try:
+            resp = completion_with_retry(
+                client, cancelled=lambda: self.cancel_requested,
+                deadline=getattr(self, "_completion_deadline", None),
+                model=self.model, messages=messages, temperature=0.1,
+                max_tokens=300, stream=False)
+            verdict = (resp.choices[0].message.content or "").strip()
+            self._log("verify", verdict=verdict.splitlines()[0] if verdict else "empty")
+            return verdict or "PASS"
+        except Exception as e:
+            self._log("verify_failed", error=type(e).__name__)
+            return "PASS"
 
     def _evaluate_action(self, client, goal: str, action_summary: str, result_text: str) -> str:
         """
@@ -802,6 +878,8 @@ New direction: <what to do instead>
         self.context.set_goal(user_message[:200])
         _eval_count = 0
         _MAX_EVALS_PER_TURN = 3
+        self._turn_evidence = []
+        _verify_rounds = 0
 
         while self.iteration_count < MAX_ITERATIONS:
             # Wall-clock budget
@@ -938,7 +1016,29 @@ New direction: <what to do instead>
             if not tool_calls_data:
                 # Final response — no tool calls
                 self.total_completion_tokens += completion_tokens
-                self.messages.append({"role": "assistant", "content": "".join(content_chunks)})
+                final_text = "".join(content_chunks)
+                self.messages.append({"role": "assistant", "content": final_text})
+                if (verify_enabled() and self._turn_evidence and final_text.strip()
+                        and _verify_rounds < MAX_VERIFY_ROUNDS
+                        and self._completion_deadline - time.monotonic() > 60
+                        and not self.cancel_requested):
+                    _verify_rounds += 1
+                    full_response += "\n\n🔎 **Checking my answer…**\n"
+                    yield full_response
+                    verdict = self._verify_final(client, self._current_goal, final_text)
+                    if verdict.splitlines()[0].strip().upper() == "FAIL":
+                        body = "\n".join(verdict.splitlines()[1:]).strip()
+                        full_response += f"🛠️ May kulang: {body[:300]}\n\n"
+                        self._log("verify_fail", body=body[:300])
+                        self.messages.append({"role": "user", "content": (
+                            "[Verification feedback — your answer was not fully backed up]\n\n"
+                            f"{body}\n\nFix this with tools if needed, then give a corrected final answer. "
+                            "Do not repeat work that already succeeded."
+                        )})
+                        yield full_response
+                        continue
+                    full_response += "✅ Na-check, ok.\n"
+                    yield full_response
                 self._log("turn_final", finish_reason=finish_reason, completion_tokens=completion_tokens)
                 return
 
@@ -976,6 +1076,7 @@ New direction: <what to do instead>
             full_response += f"\n\n🔧 **Action:** {action_summary}\n\n"
             yield full_response
 
+            pending_images = []
             # ---- Execute each tool, render a compact one-line result ----
             for tc, args in zip(tool_calls, args_compact):
                 if self.cancel_requested:
@@ -987,7 +1088,26 @@ New direction: <what to do instead>
                 self.tool_call_count += 1
 
                 t0 = time.time()
-                result = self._execute_tool(tool_name, args)
+                prompt = self._approval_prompt(tool_name, args)
+                if prompt:
+                    text, sbx_mode = prompt
+                    full_response += (
+                        f"⏸️ **Kailangan ng approval** (walang Docker, mode: `{sbx_mode}`)\n"
+                        f"```\n{text}\n```\n"
+                        "Pindutin ang ✅ Approve o ❌ Deny sa itaas ng chat.\n"
+                    )
+                    yield full_response
+                    approved = approval_gate.request(
+                        self.session_id, text, cancelled=lambda: self.cancel_requested)
+                    self._log("approval", tool=tool_name, approved=approved)
+                    if approved:
+                        result = self._execute_tool(tool_name, args)
+                    else:
+                        result = {"status": "blocked", "risk_level": "risky",
+                                  "output": "The user denied (or did not answer) the approval request. "
+                                            "Do not retry this command. Choose a safer approach or ask the user."}
+                else:
+                    result = self._execute_tool(tool_name, args)
                 elapsed = time.time() - t0
 
                 summary = _summarize_result(result)
@@ -1003,10 +1123,26 @@ New direction: <what to do instead>
                 else:
                     badge = "✅"
 
+                self._turn_evidence.append((
+                    tool_name,
+                    result.get("status", "unknown") if isinstance(result, dict) else "unknown",
+                    str(result.get("output", "") if isinstance(result, dict) else result)[:300],
+                ))
                 full_response += f"{badge} `{tool_name}` — {elapsed:.2f}s — {summary}\n"
                 yield full_response
 
                 # Offload full result to file, inject summary into context
+                if (tool_name == "view_file" and isinstance(result, dict)
+                        and result.get("file_type") == "image" and result.get("image_path")):
+                    if self.vision:
+                        pending_images.append(result["image_path"])
+                        result["output"] = result.get("output", "") + "\n\n(The image is attached in the next message.)"
+                    else:
+                        result["output"] = result.get("output", "") + (
+                            "\n\nNote: the current model has vision turned off, so you cannot see this image. "
+                            "Use only the details above. Do not guess what the picture shows; "
+                            "tell the user, or ask them to describe it.")
+
                 raw_output = result.get("output", "") if isinstance(result, dict) else str(result)
                 offloaded_summary = self.context.offload(
                     tool_name=tool_name,
@@ -1028,6 +1164,19 @@ New direction: <what to do instead>
                     elapsed=round(elapsed, 3),
                     output_len=len(result.get("output", "")) if isinstance(result, dict) else 0,
                 )
+
+            # ---- Show images to vision-capable models (after all tool messages) ----
+            if pending_images:
+                parts = [{"type": "text", "text": "Image(s) from view_file:"}]
+                for img_path in pending_images:
+                    uri = image_data_uri(img_path)
+                    if uri:
+                        parts.append({"type": "image_url", "image_url": {"url": uri}})
+                    else:
+                        parts[0]["text"] += f" (could not load {os.path.basename(img_path)})"
+                strip_old_images(self.messages)
+                self.messages.append({"role": "user", "content": parts})
+                self._log("image_attached", count=len(pending_images))
 
             # ---- SELF-EVALUATION (agentic loop) ----
             # After each batch of tool calls, ask: "did this work? need a fix?"
