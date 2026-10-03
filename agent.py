@@ -26,6 +26,7 @@ from response_status import with_status
 
 HEARTBEAT_SECONDS = 8.0  # keep the stream alive during slow sandbox/tool work
 
+import research_guard
 from api_retry import make_client, completion_with_retry, is_transient, CompletionCancelled
 
 from config import (
@@ -272,7 +273,14 @@ For every user request, follow this 4-phase method. Keep it brief.
 
 ## CURRENT WEB RESEARCH
 For research, comparisons of current products/policies, deep search, prices, jobs or availability:
-- Use web_search before answering, then web_fetch to inspect the strongest sources.
+- Use web_search before answering, then fetch_page to inspect the strongest sources.
+- Hard limits per turn: 6 searches, 10 page fetches, about 5 minutes. They are enforced; extra calls are refused. Plan for them.
+- For prices, plan limits and feature support, fetch the vendor's own official pricing/docs page directly (the search result lists known official URLs). Blog posts and snippets are leads only.
+- Copy figures and plan names exactly as the fetched page states them. If the page shows "Free $0" do not call it a trial. Never state that a platform supports a feature (a language, a runtime, a limit) unless a fetched page says so; otherwise write "unverified".
+- Every table row needs a source URL you actually fetched or got from search. Put "unverified" in any cell you could not confirm. A short honest table beats a full wrong one.
+- If a search returns nothing twice, stop searching and fetch known pages, or say what evidence is missing.
+- For job questions: only report vacancies/salaries seen in a fetched page or a search snippet, with the source and date; JobStreet and Indeed cannot be fetched, so snippet-only. No evidence means say so.
+- The app checks your final answer against the fetched text and flags what does not match, so be exact.
 - Start with 2-4 targeted searches and 3-6 strong sources. Expand only when evidence is missing; do not promise hundreds of postings or exhaustive statistics.
 - Use today's date above as the anchor. 2026 is the current year, not a forecast based on 2024-2025. Older statistics may be the latest available, but label their dates and gaps.
 - Cite only URLs returned by tools, next to the claims they support. A search snippet is a lead, not full verification.
@@ -647,10 +655,23 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
     def _execute_tool(self, tool_name: str, arguments: dict) -> dict:
         if tool_name not in TOOL_FUNCTIONS:
             return {"status": "error", "output": f"Unknown tool: {tool_name}"}
+        ledger = getattr(self, "_ledger", None)
+        if ledger is not None:
+            refusal = ledger.gate(tool_name, arguments)
+            if refusal:
+                self._log("research_budget_block", tool=tool_name)
+                return {"status": "error", "output": refusal}
+            if tool_name == "fetch_page":
+                cached = ledger.cached_page(str(arguments.get("url", "")))
+                if cached:
+                    return {"status": "success", "output": cached}
         try:
             # Inject session_id so tools use the session's sandbox
             arguments["session_id"] = self.session_id
-            return TOOL_FUNCTIONS[tool_name](**arguments)
+            result = TOOL_FUNCTIONS[tool_name](**arguments)
+            if ledger is not None:
+                ledger.record(tool_name, arguments, result)
+            return result
         except Exception as e:
             return {"status": "error", "output": f"Tool raised: {type(e).__name__}: {e}"}
 
@@ -708,6 +729,27 @@ RULES
 - Never claim the code has a syntax or import error unless a tool output shows that error. You only see the start of the code, so judge from tool output and files.
 - Tool evidence includes the start of the code that ran and the files created this turn. If a tool succeeded and the file the user asked for is listed as created, do NOT FAIL because you cannot see all of the code.
 - Match the user's language."""
+
+    def _claim_check(self, client, answer: str) -> str:
+        """Ask the model to compare the answer with source excerpts. Never blocks on failure."""
+        excerpts = self._ledger.excerpts_for(answer) if self._ledger is not None else ""
+        if not excerpts:
+            return "OK"
+        messages = [
+            {"role": "system", "content": research_guard.CLAIM_CHECK_SYSTEM},
+            {"role": "user", "content": f"SOURCE EXCERPTS:\n{excerpts}\n\nANSWER:\n{answer[:5000]}"},
+        ]
+        try:
+            resp = completion_with_retry(
+                client, cancelled=lambda: self.cancel_requested,
+                deadline=getattr(self, "_completion_deadline", None),
+                model=self.model, messages=messages, temperature=0.0,
+                max_tokens=500, stream=False,
+                **({"extra_body": self._thinking_body()} if self._thinking_body() else {}))
+            return (resp.choices[0].message.content or "OK").strip()
+        except Exception as e:
+            self._log("claim_check_failed", error=type(e).__name__)
+            return "OK"
 
     def _verify_final(self, client, goal: str, answer: str) -> str:
         """Ask the model to check its own final answer. Never blocks on failure."""
@@ -887,7 +929,7 @@ RULES
             model=self.model,
             messages=analyze_messages,
             temperature=0.2,  # lower temp for more deterministic analysis
-            max_tokens=500,  # short plan; reserve latency and tokens for execution
+            max_tokens=800,  # short plan; headroom so a thinking model does not truncate it
             stream=False,
         )
         if self._thinking_body("high"):
@@ -1007,9 +1049,12 @@ RULES
         _verify_rounds = 0
         _stream_retries = 0
         research_request = bool(re.search(
-            r"\b(research|deep search|deep web|current|latest|hosting tiers|job market)\b",
+            r"\b(research|deep search|deep web|current|latest|hosting tiers|job market|job (?:search|postings?|openings?)|vacanc\w+|hiring)\b",
             user_message, re.I))
         research_search_done = False
+        self._ledger = research_guard.ResearchLedger() if research_request else None
+        _claim_rounds = 0
+        _budget_notice = False
 
         while MAX_ITERATIONS is None or self.iteration_count < MAX_ITERATIONS:
             if self._loop_halted:
@@ -1051,6 +1096,16 @@ RULES
             )
             if self._thinking_body():
                 kwargs["extra_body"] = self._thinking_body()
+            if self._ledger is not None and self._ledger.exhausted():
+                kwargs.pop("tools", None)
+                kwargs.pop("tool_choice", None)
+                if not _budget_notice:
+                    _budget_notice = True
+                    self.messages.append({"role": "user", "content": (
+                        "[Research budget used up] Write the final answer now from the evidence already "
+                        "fetched. Give a source URL next to each claim. Anything not shown in a fetched "
+                        "page or search snippet must be labelled 'unverified'. State what is missing.")})
+                    kwargs["messages"] = self.messages
 
             # Retry only before streaming starts. Partial streams are not replayed.
             stream = None
@@ -1215,6 +1270,40 @@ RULES
                     yield full_response
                     return
                 self.messages.append({"role": "assistant", "content": final_text})
+                if self._ledger is not None and final_text.strip():
+                    issues = self._ledger.audit(final_text)
+                    can_check = (self._ledger.has_evidence() and not self.cancel_requested
+                                 and self._completion_deadline - time.monotonic() > 60)
+                    if can_check:
+                        full_response += "\n\n🔎 **Checking claims against sources…**\n"
+                        yield full_response
+                        verdict = ""
+                        for kind, val in self._in_background(
+                                lambda: self._claim_check(client, final_text), "Checking claims"):
+                            if kind == "beat":
+                                yield full_response + val
+                            else:
+                                verdict = val
+                        issues += research_guard.parse_claim_check(verdict)
+                    if issues and _claim_rounds < 1 and can_check:
+                        _claim_rounds += 1
+                        self._log("claim_check_fail", issues=issues[:8])
+                        body = "\n".join(f"- {i}" for i in issues[:10])
+                        full_response += "🛠️ May claim na hindi tugma sa source; inaayos ko.\n\n"
+                        self.messages.append({"role": "user", "content": (
+                            "[Source check failed] These claims do not match the fetched sources:\n"
+                            f"{body}\n\nRewrite the final answer. Fix each claim to what the source text "
+                            "says, or label it 'unverified'. Do not call more tools unless a fetch is "
+                            "truly needed. Do not repeat the wrong claims.")})
+                        yield full_response
+                        continue
+                    if issues:
+                        self._log("claim_check_footer", issues=issues[:8])
+                        full_response += research_guard.footer(issues)
+                        yield full_response
+                    else:
+                        full_response += "✅ Tugma sa mga source ang mga figure.\n"
+                        yield full_response
                 if (verify_enabled() and self._turn_evidence and final_text.strip()
                         and _verify_rounds < MAX_VERIFY_ROUNDS
                         and self._completion_deadline - time.monotonic() > 60
