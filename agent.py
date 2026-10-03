@@ -21,6 +21,8 @@ import time
 import uuid
 from datetime import datetime
 
+from response_status import with_status
+
 from api_retry import make_client, completion_with_retry, is_transient, CompletionCancelled
 
 from config import (
@@ -157,6 +159,7 @@ class AIAgent:
         self.messages: list = []
         self.iteration_count = 0
         self.reasoning_effort = "high"
+        self.enable_thinking = False
         self.cancel_requested = False
         self.max_context_messages = MAX_CONTEXT_MESSAGES
 
@@ -418,8 +421,7 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
         elapsed = time.time() - self.session_start
         sandbox_info = {}
         try:
-            sb = session_manager.get_or_create(self.session_id)
-            sandbox_info = sb.get_status()
+            sandbox_info = session_manager.peek_status(self.session_id)
         except Exception:
             pass
         return {
@@ -492,6 +494,14 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
     # ===========================================================
 
     def _log(self, event: str, **fields):
+        if event in {"transient_error", "api_failed", "stream_error", "reasoning_started",
+                     "empty_response", "turn_final", "budget_exceeded", "cancelled",
+                     "cancelled_mid_stream", "provider_fallback"}:
+            safe = {key: value for key, value in fields.items()
+                    if key in {"attempt", "delay", "reasoning_seen", "completion_tokens", "elapsed"}
+                    and isinstance(value, (int, float, bool))}
+            print(json.dumps({"event": event, "session": self.session_id,
+                              "iter": self.iteration_count, **safe}), flush=True)
         try:
             record = {
                 "ts": datetime.now().isoformat(timespec="seconds"),
@@ -508,6 +518,17 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
     # ===========================================================
     # CLIENT
     # ===========================================================
+
+    def _thinking_body(self, effort=None):
+        if "nemotron" in (self.model or "").lower():
+            controls = {"enable_thinking": self.enable_thinking}
+            if self.enable_thinking:
+                # NVIDIA's modelcard requires this for reasoning + tool parsing.
+                controls["force_nonempty_content"] = True
+            return {"chat_template_kwargs": controls}
+        if _model_supports_reasoning(self.model):
+            return {"chat_template_kwargs": {"reasoning_effort": effort or self.reasoning_effort}}
+        return None
 
     def _get_client(self):
         return make_client(self.base_url, self.api_key)
@@ -615,7 +636,8 @@ RULES
                 client, cancelled=lambda: self.cancel_requested,
                 deadline=getattr(self, "_completion_deadline", None),
                 model=self.model, messages=messages, temperature=0.1,
-                max_tokens=300, stream=False)
+                max_tokens=300, stream=False,
+                **({"extra_body": self._thinking_body()} if self._thinking_body() else {}))
             verdict = (resp.choices[0].message.content or "").strip()
             self._log("verify", verdict=verdict.splitlines()[0] if verdict else "empty")
             return verdict or "PASS"
@@ -645,10 +667,8 @@ RULES
             max_tokens=400,
             stream=False,
         )
-        if supports_reasoning:
-            kwargs["extra_body"] = {
-                "chat_template_kwargs": {"reasoning_effort": "medium"}
-            }
+        if self._thinking_body("medium"):
+            kwargs["extra_body"] = self._thinking_body("medium")
         try:
             resp = completion_with_retry(
                 client, cancelled=lambda: self.cancel_requested,
@@ -773,10 +793,8 @@ RULES
             max_tokens=1500,  # analysis should be concise
             stream=False,
         )
-        if supports_reasoning:
-            kwargs["extra_body"] = {
-                "chat_template_kwargs": {"reasoning_effort": "high"}
-            }
+        if self._thinking_body("high"):
+            kwargs["extra_body"] = self._thinking_body("high")
 
         try:
             resp = completion_with_retry(
@@ -895,8 +913,8 @@ RULES
 
             self.iteration_count += 1
 
-            # Brief "thinking" indicator
-            thinking_msg = "\n\n💭 Thinking…\n\n"
+            # Keep this visible until answer text or tool calls actually arrive.
+            thinking_msg = "\n\n⏳ Waiting for the model…\n\n"
             full_response += thinking_msg
             yield full_response
 
@@ -912,23 +930,33 @@ RULES
                 frequency_penalty=0.1,
                 presence_penalty=0.1,
             )
-            if supports_reasoning:
-                # NVIDIA NIM uses chat_template_kwargs via extra_body (the
-                # OpenAI client's reasoning_effort kwarg is rejected).
-                kwargs["extra_body"] = {
-                    "chat_template_kwargs": {"reasoning_effort": self.reasoning_effort}
-                }
+            if self._thinking_body():
+                kwargs["extra_body"] = self._thinking_body()
 
             # Retry only before streaming starts. Partial streams are not replayed.
             stream = None
             while stream is None:
                 try:
-                    stream = completion_with_retry(
-                        client, cancelled=lambda: self.cancel_requested,
-                        deadline=self._completion_deadline,
-                        on_retry=lambda attempt, delay, error: self._log(
-                            "transient_error", attempt=attempt, delay=delay, error=error),
-                        **kwargs)
+                    retry_status = [None]
+                    def on_retry(attempt, delay, error):
+                        retry_status[0] = f"Retrying (attempt {attempt + 1}/3, {delay}s backoff)…"
+                        self._log("transient_error", attempt=attempt, delay=delay, error=error)
+                    def create_stream():
+                        result = completion_with_retry(
+                            client, cancelled=lambda: self.cancel_requested,
+                            deadline=self._completion_deadline, on_retry=on_retry, **kwargs)
+                        if self.cancel_requested or time.monotonic() >= self._completion_deadline:
+                            result.close()
+                            raise CompletionCancelled()
+                        yield result
+                    for kind, value in with_status(create_stream,
+                            deadline=self._completion_deadline,
+                            cancelled=lambda: self.cancel_requested):
+                        if kind == "item":
+                            stream = value
+                        else:
+                            status = retry_status[0] or "Waiting for the model…"
+                            yield full_response.replace(thinking_msg, f"\n\n⏳ {status}\n\n")
                 except CompletionCancelled:
                     full_response += "\n\nOperation cancelled by user."
                     yield full_response
@@ -953,8 +981,8 @@ RULES
                         kwargs["model"] = self.model
                         supports_reasoning = _model_supports_reasoning(self.model)
                         kwargs.pop("extra_body", None)
-                        if supports_reasoning:
-                            kwargs["extra_body"] = {"chat_template_kwargs": {"reasoning_effort": self.reasoning_effort}}
+                        if self._thinking_body():
+                            kwargs["extra_body"] = self._thinking_body()
                         continue
                     self._log("api_failed", error=type(e).__name__)
                     full_response += f"\n\n❌ API unavailable: {e}"
@@ -964,16 +992,20 @@ RULES
             if stream is None:
                 break
 
-            # Replace the thinking indicator with a thin rule
-            full_response = full_response.replace(thinking_msg, "\n\n---\n\n")
-
             content_chunks: list = []
             tool_calls_data: dict = {}
             finish_reason = None
             stream_error = None
 
             try:
-                for chunk in stream:
+                reasoning_seen = False
+                for kind, chunk in with_status(lambda: stream,
+                        deadline=self._completion_deadline,
+                        cancelled=lambda: self.cancel_requested):
+                    if kind == "wait":
+                        status = "Model is thinking; waiting for answer…" if reasoning_seen else "Waiting for the model…"
+                        yield full_response.replace(thinking_msg, f"\n\n⏳ {status}\n\n")
+                        continue
                     if self.cancel_requested:
                         full_response += "\n\n⏹️ **Operation cancelled by user.**"
                         self._log("cancelled_mid_stream")
@@ -984,12 +1016,18 @@ RULES
                     delta = chunk.choices[0].delta
                     finish_reason = chunk.choices[0].finish_reason
 
+                    if delta and getattr(delta, "reasoning_content", None) and not reasoning_seen:
+                        reasoning_seen = True
+                        self._log("reasoning_started")
+                        yield full_response.replace(thinking_msg, "\n\n⏳ Model is thinking; waiting for answer…\n\n")
                     if delta and delta.content:
+                        full_response = full_response.replace(thinking_msg, "\n\n---\n\n")
                         content_chunks.append(delta.content)
                         full_response += delta.content
                         yield full_response
 
                     if delta and delta.tool_calls:
+                        full_response = full_response.replace(thinking_msg, "\n\n---\n\n")
                         for tcd in delta.tool_calls:
                             idx = tcd.index
                             if idx not in tool_calls_data:
@@ -1001,9 +1039,13 @@ RULES
                                     tool_calls_data[idx]["name"] = tcd.function.name
                                 if tcd.function.arguments:
                                     tool_calls_data[idx]["arguments"] += tcd.function.arguments
+            except CompletionCancelled:
+                full_response += "\n\n⏹️ Operation cancelled by user."
+                yield full_response
+                return
             except Exception as e:
                 self.errors += 1
-                self._log("stream_error", error=str(e))
+                self._log("stream_error", error=type(e).__name__)
                 full_response += f"\n\n❌ Stream error: {e}"
                 yield full_response
                 return
@@ -1017,6 +1059,13 @@ RULES
                 # Final response — no tool calls
                 self.total_completion_tokens += completion_tokens
                 final_text = "".join(content_chunks)
+                if not final_text.strip():
+                    self.errors += 1
+                    self._log("empty_response", reasoning_seen=reasoning_seen)
+                    full_response = full_response.replace(thinking_msg, "")
+                    full_response += "\n\n⚠️ The model finished without an answer. Try again or choose another model in Settings."
+                    yield full_response
+                    return
                 self.messages.append({"role": "assistant", "content": final_text})
                 if (verify_enabled() and self._turn_evidence and final_text.strip()
                         and _verify_rounds < MAX_VERIFY_ROUNDS

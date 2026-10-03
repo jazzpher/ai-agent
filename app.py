@@ -103,6 +103,9 @@ def format_sandbox_status(agent) -> str:
     status = get_sandbox_status(agent.session_id)
     mode = status.get("mode", "unknown")
 
+    if mode == "not started":
+        return "🛡️ Sandbox: not started. It starts only when a tool needs it."
+
     if mode == "docker":
         return (
             f"🐳 **Docker sandbox: ACTIVE**\n"
@@ -141,7 +144,6 @@ def chat_stream(message: str, history: list, file_paths, agent: AIAgent):
         yield history, ""
         return
 
-    agent.refresh_providers()  # picks up Settings changes without restart
 
     # Copy uploads into workspace
     processed_paths, upload_info = copy_uploads_to_workspace(file_paths)
@@ -159,6 +161,10 @@ def chat_stream(message: str, history: list, file_paths, agent: AIAgent):
         {"role": "user", "content": display_message},
         {"role": "assistant", "content": ""},
     ]
+
+    history[-1]["content"] = "⏳ Preparing your request…"
+    yield history, format_metrics(agent)
+    agent.refresh_providers()  # picks up Settings changes without restart
 
     # Stream agent response (with two-pass analyze-then-act)
     for partial in agent.chat_stream(display_message, uploaded_files_info=upload_info):
@@ -252,6 +258,7 @@ def start_chat(message, history, file_paths, agent: AIAgent):
     # ---- Phase 2: Run the stream (keep Stop visible) ----
     try:
         for h, metrics in chat_stream(message, history, file_paths, agent):
+            history = h  # preserve the streamed answer when final cleanup runs
             yield (h, metrics, send_state, stop_state,
                    cur_status, list(file_paths or []), no_change, no_change)
     except Exception as e:
@@ -499,6 +506,9 @@ def build_app():
             with gr.Column(scale=1):
                 gr.Markdown("### ⚙️ Settings")
                 build_providers_panel()
+                thinking_checkbox = gr.Checkbox(
+                    value=False, label="Enable Nemotron thinking (slower)",
+                    info="Off by default for faster answers. Reasoning text stays private.")
 
                 gr.Markdown("---")
 
@@ -545,6 +555,12 @@ def build_app():
         # ============================================================
 
         uploaded_files = gr.State([])
+
+        def set_thinking(enabled, agent):
+            agent.enable_thinking = bool(enabled)
+            return agent
+        thinking_checkbox.change(set_thinking, inputs=[thinking_checkbox, agent_state],
+                                 outputs=[agent_state], queue=False)
 
         # Upload handler
         upload_btn.upload(
@@ -598,7 +614,7 @@ def build_app():
         stop_btn.click(
             stop_chat,
             inputs=[agent_state],
-            outputs=[send_btn, stop_btn],
+            outputs=[send_btn, stop_btn], queue=False,
         )
 
         # Clear
