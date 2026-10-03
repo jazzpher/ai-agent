@@ -23,6 +23,24 @@ from typing import Optional
 from config import WORKSPACE_DIR, SANDBOX_DIR, SANDBOX_TIMEOUT, CORE_PACKAGES
 
 
+_IMPORT_NAMES = {
+    "pillow": "PIL", "python-docx": "docx", "python-pptx": "pptx",
+    "openpyxl": "openpyxl", "pypdf2": "PyPDF2", "pdfplumber": "pdfplumber",
+    "requests": "requests", "beautifulsoup4": "bs4", "pandas": "pandas",
+}
+
+
+def missing_core_packages() -> list[str]:
+    """Core packages that cannot be imported by the host interpreter."""
+    import importlib.util
+    out = []
+    for pkg in CORE_PACKAGES:
+        mod = _IMPORT_NAMES.get(pkg.lower(), pkg.replace("-", "_"))
+        if importlib.util.find_spec(mod) is None:
+            out.append(pkg)
+    return out
+
+
 class SessionSandbox:
     """A persistent sandbox that lives for the duration of a session."""
 
@@ -180,7 +198,7 @@ class SessionSandbox:
 
         # Create venv
         subprocess.run(
-            [sys.executable, "-m", "venv", self._venv_path],
+            [sys.executable, "-m", "venv", "--system-site-packages", self._venv_path],
             capture_output=True, text=True, timeout=60,
         )
 
@@ -192,14 +210,13 @@ class SessionSandbox:
             self._python_path = os.path.join(self._venv_path, "bin", "python")
             self._pip_path = os.path.join(self._venv_path, "bin", "pip")
 
-        # Upgrade pip first
-        subprocess.run(
-            [self._python_path, "-m", "pip", "install", "--quiet", "--upgrade", "pip"],
-            capture_output=True, text=True, timeout=60,
-        )
+        # Reuse packages already installed for the app (--system-site-packages) and
+        # only install what is missing. No pip upgrade: on small hosts (Render free,
+        # 512MB) a full reinstall blocked the first tool call for minutes.
+        missing = missing_core_packages()
+        if missing:
+            self._venv_pip_install(" ".join(missing), timeout=300)
 
-        # Install core packages
-        self._venv_pip_install(" ".join(CORE_PACKAGES), timeout=300)
 
     def _venv_pip_install(self, packages: str, timeout: int = 180) -> dict:
         """Install packages in the ephemeral venv."""
