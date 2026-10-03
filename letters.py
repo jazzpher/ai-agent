@@ -25,6 +25,25 @@ def today_text(tz: str = "Asia/Manila") -> str:
     return f"{now.strftime('%B')} {now.day}, {now.year}"
 
 
+def resolve_date_text(date_text=None, tz="Asia/Manila"):
+    """Use today's date unless a plausible current/future date was given.
+
+    The model does not know today's date and often invents an old one, so a
+    date more than 30 days in the past is replaced by today's real date.
+    """
+    if not date_text or not str(date_text).strip():
+        return today_text()
+    text = str(date_text).strip()
+    today = datetime.now(ZoneInfo(tz)).date()
+    for fmt in ("%B %d, %Y", "%b %d, %Y", "%Y-%m-%d", "%d %B %Y", "%B %d %Y"):
+        try:
+            parsed = datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+        return text if (today - parsed).days <= 30 else today_text()
+    return text
+
+
 def make_seal_png(path: str, lines=("SAMPLE", "SEAL"), size: int = 600) -> str:
     """Draw a simple circular placeholder seal (double ring + text)."""
     from PIL import Image, ImageDraw, ImageFont
@@ -127,7 +146,7 @@ def build_letter(out_path, *, agency, office="", seal_lines=("SAMPLE", "SEAL"), 
                 run.font.color.rgb = color
         return q
 
-    para(date_text or today_text(), after=12)
+    para(resolve_date_text(date_text), after=12)
     for i, line in enumerate(recipient_lines):
         para(line, after=12 if i == len(recipient_lines) - 1 else 0)
     if subject:
