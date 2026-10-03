@@ -29,8 +29,15 @@ def make_client(base_url, api_key):
 
 
 def is_transient(error):
-    return (isinstance(error, APIConnectionError) or
-            isinstance(error, APIStatusError) and error.status_code in TRANSIENT_STATUSES)
+    # Some providers send an SSE error with only a message (no HTTP status).
+    # Never retry authentication/permission/validation failures based on wording.
+    if isinstance(error, APIStatusError):
+        return error.status_code in TRANSIENT_STATUSES
+    return (isinstance(error, (APIConnectionError, httpx.TransportError)) or
+            isinstance(error, (TimeoutError, ConnectionError)) or
+            any(term in str(error).lower() for term in (
+                "service temporarily overloaded", "temporarily unavailable",
+                "connection reset", "connection closed", "incomplete chunked read")))
 
 
 def completion_with_retry(client, *, cancelled=lambda: False, deadline=None,
