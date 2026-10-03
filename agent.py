@@ -935,6 +935,7 @@ RULES
         _MAX_EVALS_PER_TURN = 3
         self._turn_evidence = []
         _verify_rounds = 0
+        _stream_retries = 0
 
         while MAX_ITERATIONS is None or self.iteration_count < MAX_ITERATIONS:
             if self._loop_halted:
@@ -1089,6 +1090,19 @@ RULES
             except Exception as e:
                 self.errors += 1
                 self._log("stream_error", error=type(e).__name__)
+                _silent = not content_chunks and not tool_calls_data and not reasoning_seen
+                if (_silent and _stream_retries < 2 and not self.cancel_requested
+                        and (is_transient(e) or "timeout" in type(e).__name__.lower()
+                             or "timed out" in str(e).lower())
+                        and time.monotonic() < self._completion_deadline):
+                    # Nothing arrived yet, so replaying this step cannot duplicate output.
+                    _stream_retries += 1
+                    self._log("stream_retry", attempt=_stream_retries, error=type(e).__name__)
+                    full_response = full_response.replace(thinking_msg, "")
+                    full_response += f"\n\n🔁 Model stream stalled, retrying ({_stream_retries}/2)…\n\n"
+                    yield full_response
+                    self.iteration_count -= 1
+                    continue
                 full_response += f"\n\n❌ Stream error: {e}"
                 yield full_response
                 return
