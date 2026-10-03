@@ -8,6 +8,7 @@ New in this version:
 - view_file tool for docx/pdf/pptx/images
 - Metrics panel with sandbox info
 """
+import json
 import os
 import shutil
 import time
@@ -322,8 +323,11 @@ def start_chat(message, history, file_paths, agent: AIAgent):
                    cur_status, list(file_paths or []), no_change, no_change)
     except GeneratorExit:
         closed = True  # client disconnected: a generator must not yield now
+        print(json.dumps({"event": "client_disconnected", "waited_s": waited}), flush=True)
         raise
     except Exception as e:
+        print(json.dumps({"event": "chat_exception", "error": type(e).__name__,
+                          "detail": str(e)[:300]}), flush=True)
         # Surface the error in the metrics panel so the user can see it
         err = f"Error: {type(e).__name__}: {e}"
         if history:
@@ -604,7 +608,7 @@ if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore", category=DeprecationWarning, module="gradio")
     import logging
-    logging.getLogger("uvicorn.error").setLevel(logging.CRITICAL)
+    logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
     print("=" * 50)
     print("   AI Agent - Sandboxed Local Assistant")
