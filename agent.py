@@ -268,7 +268,15 @@ The user owns this agent and wants results, not refusals. For every ordinary req
 
 # 🎯 CORE METHOD — ALWAYS FOLLOW
 
-For every user request, follow this 4-phase method. NEVER skip a phase.
+For every user request, follow this 4-phase method. Keep it brief.
+
+## CURRENT WEB RESEARCH
+For research, comparisons of current products/policies, deep search, prices, jobs or availability:
+- Use web_search before answering, then web_fetch to inspect the strongest sources.
+- Start with 2-4 targeted searches and 3-6 strong sources. Expand only when evidence is missing; do not promise hundreds of postings or exhaustive statistics.
+- Use today's date above as the anchor. 2026 is the current year, not a forecast based on 2024-2025. Older statistics may be the latest available, but label their dates and gaps.
+- Cite only URLs returned by tools, next to the claims they support. A search snippet is a lead, not full verification.
+- If tools fail, try a different query/source and report the missing evidence plainly. Never invent sources, salaries, vacancy counts or a claim that research was completed.
 
 ## Phase 1: UNDERSTAND
 Before doing anything, explicitly restate the request in your own words, then list:
@@ -848,6 +856,9 @@ RULES
 - If the user said "search the internet" or "make it look like X", call that out in the Plan.
 - Never plan a refusal, a clarifying question or a disclaimer for an ordinary task; plan how to do it. Gray-area or legally risky tasks are done, with a short legal reminder at the end of the final answer. Only requests aimed at harming others (hacking others, fraud, violence, minors) are declined.
 - Do NOT include tool calls or code. Just the analysis.
+- Keep the entire plan under 250 words and 4 steps. Do not repeat the user's requirements at length.
+- For research: start with 2-4 targeted web searches and 3-6 sources, read primary pages, then synthesize. Do not promise 50/200 postings, frequency statistics or exhaustive coverage without data already available.
+- The current date supplied below is authoritative. Treat the current year as current, not forward-looking; distinguish older published statistics from current postings.
 - Match the user's language."""
 
     def _analyze_task(self, client, user_message: str, uploaded_files_info: str) -> str:
@@ -867,7 +878,7 @@ RULES
             )
 
         analyze_messages = [
-            {"role": "system", "content": self._ANALYZE_SYSTEM},
+            {"role": "system", "content": self._ANALYZE_SYSTEM + "\nToday's date (Asia/Manila): " + _today_text()},
             {"role": "user", "content": prompt_content},
         ]
 
@@ -876,7 +887,7 @@ RULES
             model=self.model,
             messages=analyze_messages,
             temperature=0.2,  # lower temp for more deterministic analysis
-            max_tokens=1500,  # analysis should be concise
+            max_tokens=500,  # short plan; reserve latency and tokens for execution
             stream=False,
         )
         if self._thinking_body("high"):
@@ -939,6 +950,11 @@ RULES
         if not any(m.get("role") == "system" for m in self.messages):
             self.messages.insert(0, {"role": "system", "content": self.system_prompt})
 
+        # Refresh the clock and memory at EVERY turn, including long-lived sessions.
+        self._load_memory()
+        self.system_prompt = self._build_system_prompt()
+        self.messages[0]["content"] = self.system_prompt
+
         # Inject dynamic context block into system message
         context_block = self.context.build_context_block()
         if context_block:
@@ -990,6 +1006,10 @@ RULES
         self._files_before = _workspace_snapshot()
         _verify_rounds = 0
         _stream_retries = 0
+        research_request = bool(re.search(
+            r"\b(research|deep search|deep web|current|latest|hosting tiers|job market)\b",
+            user_message, re.I))
+        research_search_done = False
 
         while MAX_ITERATIONS is None or self.iteration_count < MAX_ITERATIONS:
             if self._loop_halted:
@@ -1020,7 +1040,8 @@ RULES
                 model=self.model,
                 messages=self.messages,
                 tools=TOOL_DEFINITIONS,
-                tool_choice="auto",
+                tool_choice=({"type": "function", "function": {"name": "web_search"}}
+                             if research_request and not research_search_done else "auto"),
                 temperature=DEFAULT_TEMPERATURE,
                 max_tokens=DEFAULT_MAX_TOKENS,
                 stream=True,
@@ -1152,7 +1173,10 @@ RULES
             except Exception as e:
                 self.errors += 1
                 self._log("stream_error", error=type(e).__name__)
-                _silent = not content_chunks and not tool_calls_data and not reasoning_seen
+                # Reasoning is not a user answer or tool side effect. It is safe
+                # to retry after reasoning-only chunks, but never after partial
+                # answer/tool-call output (which could duplicate actions).
+                _silent = not content_chunks and not tool_calls_data
                 if (_silent and _stream_retries < 2 and not self.cancel_requested
                         and (is_transient(e) or "timeout" in type(e).__name__.lower()
                              or "timed out" in str(e).lower())
@@ -1169,6 +1193,9 @@ RULES
                 yield full_response
                 return
 
+            if any(t.get("name") == "web_search" for t in tool_calls_data.values()):
+                research_search_done = True
+            _stream_retries = 0
             if content_chunks:
                 yield full_response  # flush text withheld by the throttle
             completion_tokens = sum(_count_tokens(c) for c in content_chunks)
