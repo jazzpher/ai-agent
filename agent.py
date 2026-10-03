@@ -1054,6 +1054,7 @@ RULES
         research_search_done = False
         self._ledger = research_guard.ResearchLedger() if research_request else None
         _claim_rounds = 0
+        _pseudo_rounds = 0
         _budget_notice = False
 
         while MAX_ITERATIONS is None or self.iteration_count < MAX_ITERATIONS:
@@ -1097,7 +1098,10 @@ RULES
             if self._thinking_body():
                 kwargs["extra_body"] = self._thinking_body()
             if self._ledger is not None and self._ledger.exhausted():
-                kwargs.pop("tools", None)
+                # Keep the other tools: a conversation full of tool calls with no tools
+                # makes the model write pseudo tool calls as text, which show up blank.
+                kwargs["tools"] = [t for t in TOOL_DEFINITIONS
+                                   if t["function"]["name"] not in research_guard.RESEARCH_TOOLS]
                 kwargs.pop("tool_choice", None)
                 if not _budget_notice:
                     _budget_notice = True
@@ -1269,6 +1273,17 @@ RULES
                     full_response += "\n\n⚠️ The model finished without an answer. Try again or choose another model in Settings."
                     yield full_response
                     return
+                if (self._ledger is not None and _pseudo_rounds < 1
+                        and research_guard.looks_like_tool_call(final_text)):
+                    _pseudo_rounds += 1
+                    self._log("pseudo_tool_call_text")
+                    self.messages.append({"role": "user", "content": (
+                        "[Your reply was a tool call written as text, which the user cannot see.] "
+                        "No more searches or fetches are available. Write the final answer now in plain "
+                        "markdown: a table with a source URL per row, and 'unverified' wherever a page "
+                        "was not fetched. List the platforms you could not check.")})
+                    full_response = full_response.replace(thinking_msg, "")
+                    continue
                 self.messages.append({"role": "assistant", "content": final_text})
                 if self._ledger is not None and final_text.strip():
                     issues = self._ledger.audit(final_text)
