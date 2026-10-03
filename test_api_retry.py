@@ -107,7 +107,7 @@ class RetryTest(unittest.TestCase):
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'AIAgent')
         selected = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in ('chat_stream', '_switch_provider', '_apply_provider', '_thinking_body')]
         module = ast.Module(body=[ast.ClassDef(name='AIAgent', bases=[], keywords=[], body=selected, decorator_list=[])], type_ignores=[])
-        scope = dict(time=api_retry.time, MAX_TOTAL_SECONDS=120, MAX_ITERATIONS=2, REPEAT_CALL_LIMIT=5, DEFAULT_TEMPERATURE=0.3,
+        scope = dict(re=__import__("re"), time=api_retry.time, MAX_TOTAL_SECONDS=120, MAX_ITERATIONS=2, REPEAT_CALL_LIMIT=5, DEFAULT_TEMPERATURE=0.3,
                      DEFAULT_MAX_TOKENS=8192, TOOL_DEFINITIONS=[], _model_supports_reasoning=lambda m: False,
                      completion_with_retry=api_retry.completion_with_retry, is_transient=api_retry.is_transient,
                      CompletionCancelled=api_retry.CompletionCancelled,
@@ -116,6 +116,7 @@ class RetryTest(unittest.TestCase):
         exec(compile(ast.fix_missing_locations(module), 'agent.py', 'exec'), scope)
         agent = scope['AIAgent']()
         agent.enable_thinking=False; agent.reasoning_effort='high'; agent.api_key='fake'; agent.model='first'; agent.errors=0; agent.messages=[]; agent.system_prompt='test'
+        agent._build_system_prompt=lambda: 'test'
         agent.context=SimpleNamespace(build_context_block=lambda: '', set_goal=lambda g: None)
         agent._trim_conversation_history=lambda: None; agent._load_memory=lambda: None; agent._should_analyze=lambda *a: False
         agent._log=Mock(); agent._provider_idx=0
