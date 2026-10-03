@@ -1,9 +1,18 @@
 """Bounded retries before a completion starts, never replay a partial stream."""
 import time
 import json
+import httpx
 from openai import OpenAI, APIConnectionError, APIStatusError
 
-REQUEST_TIMEOUT_SECONDS = 30.0
+# Read timeout is the max silence between bytes. Slow models (Nemotron Ultra)
+# can stay quiet for a minute or more while writing a long tool call, so 30s
+# cut real work off. Connect stays short so a dead host still fails fast.
+REQUEST_TIMEOUT_SECONDS = 240.0
+CONNECT_TIMEOUT_SECONDS = 20.0
+
+
+def build_timeout(read_seconds):
+    return httpx.Timeout(read_seconds, connect=min(CONNECT_TIMEOUT_SECONDS, read_seconds))
 RETRY_DELAYS = (1, 2)  # three attempts, at most three seconds of backoff
 TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
 
@@ -15,7 +24,7 @@ class CompletionCancelled(Exception):
 def make_client(base_url, api_key):
     # Own retries here so SDK retries do not multiply attempts or hide waits.
     return OpenAI(base_url=base_url, api_key=api_key,
-                  timeout=REQUEST_TIMEOUT_SECONDS, max_retries=0)
+                  timeout=build_timeout(REQUEST_TIMEOUT_SECONDS), max_retries=0)
 
 
 def is_transient(error):
@@ -37,9 +46,10 @@ def completion_with_retry(client, *, cancelled=lambda: False, deadline=None,
         if remaining is not None and remaining <= 0:
             raise TimeoutError("Conversation time budget exhausted")
         request = dict(kwargs)
-        request["timeout"] = min(REQUEST_TIMEOUT_SECONDS, remaining) if remaining is not None else REQUEST_TIMEOUT_SECONDS
+        read_seconds = min(REQUEST_TIMEOUT_SECONDS, remaining) if remaining is not None else REQUEST_TIMEOUT_SECONDS
+        request["timeout"] = build_timeout(read_seconds)
         print(json.dumps({"event": "request_start", "attempt": attempt + 1,
-                          "timeout_seconds": request["timeout"],
+                          "timeout_seconds": read_seconds,
                           "stream": bool(request.get("stream"))}), flush=True)
         try:
             result = client.chat.completions.create(**request)
