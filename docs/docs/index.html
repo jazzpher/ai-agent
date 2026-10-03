@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f3f4ef">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="AI Agent">
+<meta name="robots" content="noindex">
+<title>Waking AI Agent</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAADo0lEQVR4nO3dQU4bQRBG4Z8oR+ECuUFOgJRtDphtjpIrZUEWiPCMPZ7xVHW9b4eQoLvrDSPbwn56fvke6SNfzl6A6jIOIeMQMg4h4xAyDiHjEDIOIeMQMg4h4xAyDiHjEDIOIeMQMg4h4xAyDiHjEDIOIeMQMg4h4xAyDiHjEDIOIeMQMg4h4xAyDiHjEDIOIeMQMg4h4xAyDiHjEDIOIeMQMg4h4xD6evYCPvDn1++3X377+eOslRyq/jafSr299bvzeqvg2W3WZZuFbisXjuzT7zbSaJtV4rjmUEod3Da9tlklDhVUIo7rr5U6V9UG7bZZIg7V1C+OIlfVrTouu18caXjQ7Rb8qkQcGx7cNzruDUst8mxHiTi2adRHU43jSIc+6q/wgt5xpPbpV17bNdrHkaozqLmqm6wQR0ELlJFl4ig1jFKLuccicaTMSIosYxfrxJECgzl9AftaKo6cOp7Fysh6ceSkIa1XRpaMIw8f1ZJlZNU48sCBrVpGFo4jDxnbwmVk7Thy8PDWLiPt4mj94n6RF+Kv1yyOlOnj1p/Zrox0jCMF+phQRprGkVP7GFJG+saRk/qYU0Zax5GH9zGqjHSPIw/sY1oZWSCOPKSPgWVkjThycB91nil5sEXiyGF99P2vk/utE0cOmMrkMrJYHLl9NhfGP7yMrBdHdurDMrJkHLm7D8t4tWYc2fX+svvv6mLZOLK1j5lPaXxo5Thy/N+PhcvI8nHkyPmtXUYmxHGQ5cvIkDh2H+SEMjIkjuw6ziFlZE4c2Wmoc8rIqDgybLT3mxVH7utjWlvj4sjWGU8rIzPjyO2THlhGxsaRW+Y9s4xMjuNKY8vI8Dg+HfzkMjI8jlwc//AyUvPTIR/sNYK3r8eaxSvj+Mcg/jf9tqILjEPIOISMQ8g4hIxDyDiEjEPIOISMQ8g4hIxDyDiEjEPIOISMQ8g4hIxDyDiEjEPIOISMQ8g4hIxDyDiEjEPIOISMQ8g4hIxDyDiESsQx5FM8222zRByqyTiEjEOoRBxD3i+23TZLxKGaqsRxzbVS5Hq6R69tVokjnx1KnSO7U6NtPj2/fD97De+9e5Rf6rx2VH+bFeNQEYVuK6rGOISMQ8g4hIxDyDiEjEPIOISMQ8g4hIxDyDiEjEPIOISMQ8g4hIxDyDiEjEPIOISMQ8g4hIxDyDiEjEPIOISMQ8g4hIxDyDiEjEPIOISMQ8g4hIxDyDiEjEPIOISMQ8g4hIxD6C8g/P4LpFcD6AAAAABJRU5ErkJggg==">
+<style>
+:root { color-scheme: light; --ink:#183e38; --green:#244e40; --muted:#6e7972; --line:#dce2d8; --soft:#e4ebe1; --bg:#f3f4ef; }
+* { box-sizing:border-box; }
+html, body { margin:0; min-height:100%; }
+body { min-height:100dvh; background:var(--bg); color:var(--ink); font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px 16px calc(24px + env(safe-area-inset-bottom)); }
+.brand { display:flex; align-items:center; gap:12px; margin-bottom:22px; }
+.mark { width:40px; height:40px; border-radius:12px; background:var(--soft); display:grid; place-items:center; }
+.brand strong { display:block; font-size:20px; line-height:24px; font-weight:650; letter-spacing:-.5px; }
+.brand span.sub { display:block; margin-top:3px; font-size:9px; letter-spacing:1.5px; color:var(--muted); }
+.card { width:100%; max-width:440px; background:#fff; border:1px solid var(--line); border-radius:18px; padding:30px 28px 26px; box-shadow:0 8px 28px #173e3805; }
+.eyebrow { font-size:9px; font-weight:600; letter-spacing:1.6px; color:#819184; }
+h1 { font-size:30px; line-height:1.2; letter-spacing:-1px; font-weight:500; margin:14px 0 10px; color:#254135; }
+p { margin:0; font-size:14px; line-height:1.7; color:#788579; }
+.bar { height:6px; border-radius:6px; background:#edf0e9; overflow:hidden; margin:24px 0 18px; position:relative; }
+.bar i { position:absolute; inset:0 auto 0 0; width:38%; background:var(--green); border-radius:6px; animation:slide 1.7s ease-in-out infinite; }
+@keyframes slide { 0% { transform:translateX(-100%); } 100% { transform:translateX(280%); } }
+.steps { list-style:none; margin:0; padding:0; display:grid; gap:10px; font-size:13px; color:#9aa59b; }
+.steps li { display:flex; align-items:center; gap:10px; }
+.steps .dot { width:8px; height:8px; border-radius:50%; background:#d5ddd2; flex:none; }
+.steps li.on { color:var(--ink); }
+.steps li.on .dot { background:var(--green); box-shadow:0 0 0 4px #244e4018; }
+.steps li.done { color:#6e7972; }
+.steps li.done .dot { background:#8aa592; }
+.meta { display:flex; justify-content:space-between; align-items:center; margin-top:22px; padding-top:16px; border-top:1px solid #edf0e9; font-size:12px; color:var(--muted); }
+.meta b { font-variant-numeric:tabular-nums; font-weight:600; color:var(--ink); }
+.actions { display:flex; gap:10px; margin-top:20px; flex-wrap:wrap; }
+button, a.btn { font:inherit; font-size:14px; min-height:46px; padding:0 18px; border-radius:12px; border:1px solid var(--line); background:#fff; color:var(--ink); cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; flex:1 1 140px; }
+a.btn.primary { background:var(--green); border-color:var(--green); color:#fff; }
+button:focus-visible, a.btn:focus-visible { outline:2px solid #3c7763; outline-offset:3px; }
+.note { display:none; margin-top:18px; background:#fff7e5; color:#614720; font-size:12px; line-height:1.6; padding:12px 14px; border-radius:10px; }
+[data-state="slow"] .note, [data-state="offline"] .note { display:block; }
+[data-state="ready"] .bar i { animation:none; width:100%; transform:none; }
+.hide { display:none !important; }
+.foot { margin-top:18px; font-size:11px; color:#97a198; text-align:center; max-width:440px; line-height:1.6; }
+@media (max-width:480px) { .card { padding:24px 20px 22px; border-radius:16px; } h1 { font-size:26px; } .actions button, .actions a.btn { flex-basis:100%; } }
+@media (prefers-reduced-motion:reduce) { .bar i { animation:none; width:100%; opacity:.45; } }
+</style>
+</head>
+<body data-state="waking">
+<div class="brand"><span class="mark" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M5 18V6l7 6 7-6v12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><strong>AI Agent</strong><span class="sub">YOUR PERSONAL WORKSPACE</span></div></div>
+<main class="card" aria-live="polite">
+<span class="eyebrow" id="eyebrow">STARTING UP</span>
+<h1 id="title">Waking up the server...</h1>
+<p id="lead">The free server sleeps when idle. It usually takes about a minute to start. You will be taken in as soon as it is ready, so there is nothing to refresh.</p>
+<div class="bar" role="progressbar" aria-label="Server starting"><i></i></div>
+<ul class="steps" id="steps">
+<li class="on"><span class="dot"></span>Reaching the server</li>
+<li><span class="dot"></span>Starting the app</li>
+<li><span class="dot"></span>Almost ready</li>
+</ul>
+<div class="note" id="note"></div>
+<div class="meta"><span>Waiting for</span><b id="elapsed">0:00</b></div>
+<div class="actions"><a class="btn primary hide" id="open" href="#">Open AI Agent</a><button type="button" id="retry" class="hide">Try again</button></div>
+</main>
+<p class="foot">Keep this page open. You can save it to your home screen and open it instead of the app link.</p>
+<script>
+(function () {
+  'use strict';
+  var APP = 'https://private-ai-agent-9d5u.onrender.com/';
+  // Local testing only: ?app=http://127.0.0.1:PORT/ is honoured for loopback hosts, never for others.
+  try {
+    var q = new URLSearchParams(location.search).get('app');
+    if (q) { var u = new URL(q); if (u.hostname === '127.0.0.1' || u.hostname === 'localhost') APP = u.origin + '/'; }
+  } catch (e) {}
+  var PROBE_TIMEOUT = 8000, SLOW_AFTER = 180000, GIVE_UP = 600000;
+  var start = Date.now(), timer = null, stopped = false, ready = false, busy = false, tries = 0;
+  var $ = function (id) { return document.getElementById(id); };
+  var body = document.body;
+  var open = $('open'); open.href = APP;
+
+  function setState(s) { body.setAttribute('data-state', s); }
+  function fmt(ms) { var t = Math.floor(ms / 1000); return Math.floor(t / 60) + ':' + ('0' + (t % 60)).slice(-2); }
+  function steps(ms) {
+    var n = ms < 12000 ? 0 : ms < 45000 ? 1 : 2;
+    [].forEach.call($('steps').children, function (li, i) { li.className = ready ? 'done' : i < n ? 'done' : i === n ? 'on' : ''; });
+  }
+  function render() {
+    var ms = Date.now() - start;
+    $('elapsed').textContent = fmt(ms);
+    if (!ready) steps(ms);
+  }
+  // A cross-origin image load succeeds only if the app itself answers with an image,
+  // so Render's own "starting" page (HTML) or an error is never mistaken for a ready app.
+  function probe(cb) {
+    var img = new Image(), done = false;
+    function fin(ok) { if (done) return; done = true; img.onload = img.onerror = null; cb(ok); }
+    img.onload = function () { fin(true); };
+    img.onerror = function () { fin(false); };
+    setTimeout(function () { fin(false); }, PROBE_TIMEOUT);
+    img.src = APP + 'favicon.ico?wake=' + Date.now();
+  }
+  function ok() {
+    ready = true; clearTimeout(timer);
+    setState('ready'); steps(0);
+    $('eyebrow').textContent = 'READY';
+    $('title').textContent = 'Server is awake';
+    $('lead').textContent = 'Opening your workspace...';
+    open.classList.remove('hide'); $('retry').classList.add('hide');
+    setTimeout(function () { location.replace(APP); }, 900);
+  }
+  function next() {
+    if (stopped || ready) return;
+    var ms = Date.now() - start;
+    if (ms > SLOW_AFTER && body.getAttribute('data-state') === 'waking') {
+      setState('slow');
+      $('eyebrow').textContent = 'TAKING LONGER';
+      $('note').textContent = 'This is taking longer than usual. Render may be redeploying or restarting. Still checking in the background.';
+      open.classList.remove('hide');
+    }
+    if (ms > GIVE_UP) {
+      stopped = true; setState('offline'); $('eyebrow').textContent = 'NO ANSWER'; $('title').textContent = 'Could not reach the server';
+      $('note').textContent = 'No answer after 10 minutes. Check the service in your Render dashboard.'; $('retry').classList.remove('hide'); return;
+    }
+    if (navigator.onLine === false) { setState('offline'); $('eyebrow').textContent = 'OFFLINE'; $('note').textContent = 'You are offline. Checking again when your connection returns.'; }
+    else if (body.getAttribute('data-state') === 'offline') setState('waking');
+    if (busy) return;
+    busy = true; tries++;
+    probe(function (alive) {
+      busy = false;
+      if (alive) ok(); else timer = setTimeout(next, tries < 6 ? 2000 : 3500);
+    });
+  }
+  function restart() {
+    stopped = false; ready = false; tries = 0; start = Date.now();
+    setState('waking'); $('eyebrow').textContent = 'STARTING UP'; $('title').textContent = 'Waking up the server...';
+    $('retry').classList.add('hide'); open.classList.add('hide'); next();
+  }
+  $('retry').addEventListener('click', restart);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden && !ready && !stopped) { clearTimeout(timer); next(); } });
+  window.addEventListener('online', function () { if (!ready && !stopped) { clearTimeout(timer); next(); } });
+  setInterval(render, 500);
+  render(); next();
+})();
+</script>
+</body>
+</html>
