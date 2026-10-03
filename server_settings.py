@@ -1,6 +1,7 @@
 """Fail-closed launch settings. No network binding without a strong login."""
 import hmac
 import os
+from ui_design import LOGIN_MESSAGE
 
 
 def launch_settings(env=None):
@@ -29,4 +30,4 @@ def launch_settings(env=None):
         raise ValueError("PORT / AGENT_PORT must be between 1 and 65535.")
     return dict(server_name=host, server_port=port, auth=auth,
                 share=False, inbrowser=not public, show_api=False,
-                auth_message="Private AI agent. Sign in with your configured username and password.")
+                auth_message=LOGIN_MESSAGE)

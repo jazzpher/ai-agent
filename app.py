@@ -16,7 +16,7 @@ from pathlib import Path
 
 import gradio as gr
 
-from ui_design import CSS, HEADER, EMPTY_CHAT
+from ui_design import CSS, HEADER, EMPTY_CHAT, workspace_theme
 from server_settings import launch_settings
 from agent import AIAgent
 from config import NVIDIA_API_KEY, DEFAULT_MODEL, WORKSPACE_DIR
@@ -384,7 +384,7 @@ def build_providers_panel():
 
 
 def build_app():
-    theme = gr.themes.Base(primary_hue="emerald", neutral_hue="stone", font=["system-ui"])
+    theme = workspace_theme()
     with gr.Blocks(title="AI Agent | Your workspace", theme=theme, css=CSS) as app:
         gr.HTML(HEADER)
         if os.environ.get("RENDER", "").lower() == "true":
