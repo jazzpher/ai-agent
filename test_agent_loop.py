@@ -383,3 +383,30 @@ class WorkspaceFilesTest(unittest.TestCase):
         import agent as agent_mod
         self.assertEqual(agent_mod.MAX_VERIFY_ROUNDS, 1)
         self.assertIn("do NOT FAIL", agent_mod.AIAgent._VERIFY_SYSTEM)
+
+
+class LetterToolTest(unittest.TestCase):
+    def test_create_letter_docx_builds_one_page_with_seal_and_today(self):
+        import tempfile, os, subprocess, shutil
+        import tools as tools_mod
+        from docx import Document
+        from letters import today_text
+        with tempfile.TemporaryDirectory() as d, patch.object(tools_mod, "WORKSPACE_DIR", d):
+            r = tools_mod.create_letter_docx(
+                filename="t.docx", agency="Province of Quezon", office="Sample Office",
+                recipient_lines=["Sample Recipient", "Sample Office"], subject="Re: Test",
+                paragraphs=["One.", "Two."], signatory="Juan Dela Cruz (sample)",
+                footer_note="SAMPLE ONLY - NOT FOR OFFICIAL USE")
+            self.assertEqual(r["status"], "success", r)
+            path = os.path.join(d, "t.docx")
+            doc = Document(path)
+            text = "\n".join(p.text for p in doc.paragraphs)
+            self.assertIn(today_text(), text)
+            self.assertIn("Juan Dela Cruz (sample)", text)
+            self.assertEqual(len(doc.inline_shapes), 1)  # the seal image
+
+    def test_tool_registered(self):
+        import tools as tools_mod
+        self.assertIn("create_letter_docx", tools_mod.TOOL_FUNCTIONS)
+        names = [t["function"]["name"] for t in tools_mod.TOOL_DEFINITIONS]
+        self.assertIn("create_letter_docx", names)
