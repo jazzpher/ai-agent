@@ -106,7 +106,7 @@ def test_wrong_claim_gets_rewritten_once_then_marked():
     patch.stopall()
 
 
-def test_budget_exhaustion_removes_tools():
+def test_budget_exhaustion_removes_research_tools_only():
     client = FakeClient([('tool', 'web_search', {'query': 'x'}), ('text', 'No verified findings, unverified.')], sync=['OK'])
     a = make_agent(client)
     orig = rg.ResearchLedger.exhausted
@@ -115,5 +115,38 @@ def test_budget_exhaustion_removes_tools():
             patch.object(agent_mod, 'verify_enabled', return_value=False):
         run(a, 'research Railway pricing')
     streams = [c for c in client.calls if c.get('stream')]
-    assert 'tools' in streams[0] and 'tools' not in streams[1]
+    n0 = {t['function']['name'] for t in streams[0]['tools']}
+    n1 = {t['function']['name'] for t in streams[1]['tools']}
+    assert 'web_search' in n0 and 'web_search' not in n1 and 'fetch_page' not in n1 and n1
+    patch.stopall()
+
+
+def test_search_for_known_platform_is_steered_to_official_page():
+    led = rg.ResearchLedger()
+    led.record('web_search', {}, SEARCH_OK)
+    msg = led.gate('web_search', {'query': 'Netlify free tier limits 2026'})
+    assert msg and 'netlify.com/pricing' in msg
+    led.record('fetch_page', {'url': 'https://www.netlify.com/pricing/'}, PAGE)
+    assert led.gate('web_search', {'query': 'Netlify free tier limits 2026'}) is None
+    assert led.gate('web_search', {'query': 'unknownhost pricing'}) is None
+
+
+def test_pseudo_tool_call_text_detected():
+    assert rg.looks_like_tool_call('<tool_call>{"name":"fetch_page","arguments":{"url":"https://fly.io/pricing"}}</tool_call>')
+    assert rg.looks_like_tool_call('fetch_page({"url": "https://fly.io/pricing"})')
+    assert not rg.looks_like_tool_call('| Render | Free $0 | https://render.com/pricing |')
+    assert not rg.looks_like_tool_call('')
+
+
+def test_pseudo_call_reply_is_retried_and_tools_stay_for_other_work():
+    pseudo = '<tool_call>{"name":"fetch_page","arguments":{"url":"https://fly.io/pricing"}}</tool_call>'
+    client = FakeClient([('text', pseudo), ('text', 'Fly.io: unverified, not fetched.')], sync=['OK'])
+    a = make_agent(client)
+    with patch.object(rg.ResearchLedger, 'exhausted', lambda self: True), \
+            patch.object(agent_mod, 'verify_enabled', return_value=False):
+        out = run(a, 'research Fly.io pricing')
+    assert 'Fly.io: unverified' in out
+    streams = [c for c in client.calls if c.get('stream')]
+    names = [t['function']['name'] for t in streams[0]['tools']]
+    assert 'web_search' not in names and 'fetch_page' not in names and names
     patch.stopall()
