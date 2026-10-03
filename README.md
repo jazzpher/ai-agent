@@ -332,3 +332,7 @@ python checks/ui_browser_check.py --output /tmp/ui-screenshots
 
 This optional check uses `/usr/bin/google-chrome` and covers 320px/390px phone
 and 1280px desktop layouts. Playwright is not a production requirement.
+
+## Wake page for the free Render server
+
+Render's free service sleeps after about 15 minutes idle, and a sleeping app cannot serve its own loading page. `docs/index.html` is a small static page (no secrets, no build) meant for GitHub Pages (Settings > Pages > Deploy from branch > `main` / `/docs`). Open it instead of the app link: it polls the app's public `/favicon.ico` until the app answers, then redirects to the app. It can be added to the phone home screen. Local check: `python checks/wake_page_check.py` (needs playwright and Chrome).
