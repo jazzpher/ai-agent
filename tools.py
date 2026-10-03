@@ -527,7 +527,7 @@ def web_search(query: str, max_results: int = 5, session_id: str = None) -> dict
             "status": "error",
             "output": (
                 "duckduckgo-search is not installed. Run:\n"
-                "  pip install duckduckgo-search==6.3.5\n"
+                "  pip install duckduckgo-search==8.1.1\n"
                 "and restart the agent."
             ),
         }
@@ -536,7 +536,7 @@ def web_search(query: str, max_results: int = 5, session_id: str = None) -> dict
         with DDGS() as ddgs:
             for r in ddgs.text(query, max_results=max_results):
                 title = r.get("title", "")
-                href = r.get("href", "")
+                href = r.get("href") or r.get("url", "")
                 body = r.get("body", "")
                 results.append(f"### {title}\n{body}\nURL: {href}\n")
         if not results:
@@ -1248,4 +1248,4 @@ TOOL_FUNCTIONS = {
     "process_image": process_image,
     "remove_background": remove_background,
     "recall_step": recall_step,
-}
+    }
