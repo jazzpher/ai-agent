@@ -1,9 +1,10 @@
 """Bounded retries before a completion starts, never replay a partial stream."""
 import time
+import json
 from openai import OpenAI, APIConnectionError, APIStatusError
 
-REQUEST_TIMEOUT_SECONDS = 180.0
-RETRY_DELAYS = (2, 4, 8, 16, 32, 13)  # 75 seconds of backoff, seven attempts
+REQUEST_TIMEOUT_SECONDS = 30.0
+RETRY_DELAYS = (1, 2)  # three attempts, at most three seconds of backoff
 TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
 
 
@@ -37,14 +38,24 @@ def completion_with_retry(client, *, cancelled=lambda: False, deadline=None,
             raise TimeoutError("Conversation time budget exhausted")
         request = dict(kwargs)
         request["timeout"] = min(REQUEST_TIMEOUT_SECONDS, remaining) if remaining is not None else REQUEST_TIMEOUT_SECONDS
+        print(json.dumps({"event": "request_start", "attempt": attempt + 1,
+                          "timeout_seconds": request["timeout"],
+                          "stream": bool(request.get("stream"))}), flush=True)
         try:
-            return client.chat.completions.create(**request)
+            result = client.chat.completions.create(**request)
+            print(json.dumps({"event": "request_ready", "attempt": attempt + 1}), flush=True)
+            return result
         except Exception as error:
+            print(json.dumps({"event": "request_error", "attempt": attempt + 1,
+                              "error_type": type(error).__name__,
+                              "status": getattr(error, "status_code", None)}), flush=True)
             if not is_transient(error) or attempt == len(RETRY_DELAYS):
                 raise
             delay = RETRY_DELAYS[attempt]
             if deadline is not None and time.monotonic() + delay >= deadline:
                 raise
+            print(json.dumps({"event": "request_retry", "next_attempt": attempt + 2,
+                              "delay_seconds": delay}), flush=True)
             if on_retry:
                 on_retry(attempt + 1, delay, type(error).__name__)
             wake_at = time.monotonic() + delay
