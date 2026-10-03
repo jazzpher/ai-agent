@@ -364,3 +364,22 @@ class SandboxSetupTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertIn("--system-site-packages", calls[0])
         self.assertFalse(any("--upgrade" in c for c in calls))
+
+
+class WorkspaceFilesTest(unittest.TestCase):
+    def test_changed_files_reports_new_and_modified(self):
+        import tempfile, os
+        import agent as agent_mod
+        with tempfile.TemporaryDirectory() as d, patch.object(agent_mod, "WORKSPACE_DIR", d):
+            open(os.path.join(d, "old.txt"), "w").write("a")
+            before = agent_mod._workspace_snapshot()
+            open(os.path.join(d, "letter.docx"), "w").write("x")
+            open(os.path.join(d, "old.txt"), "w").write("changed!")
+            open(os.path.join(d, ".hidden"), "w").write("x")
+            self.assertEqual(agent_mod._changed_files(before), ["letter.docx", "old.txt"])
+            self.assertEqual(agent_mod._changed_files(None), [])
+
+    def test_verifier_rounds_and_prompt_allow_created_file(self):
+        import agent as agent_mod
+        self.assertEqual(agent_mod.MAX_VERIFY_ROUNDS, 1)
+        self.assertIn("do NOT FAIL", agent_mod.AIAgent._VERIFY_SYSTEM)
