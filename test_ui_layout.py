@@ -36,3 +36,16 @@ class WorkspaceUITest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class FilesPanelTest(unittest.TestCase):
+    def test_list_workspace_files_newest_first(self):
+        import tempfile, os, time
+        import app as app_mod
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d, patch.object(app_mod, "WORKSPACE_DIR", d):
+            self.assertIsNone(app_mod.list_workspace_files())
+            a = os.path.join(d, "a.docx"); b = os.path.join(d, "b.txt")
+            open(a, "w").write("1"); time.sleep(0.02); open(b, "w").write("2")
+            os.utime(a, (1, 1))
+            self.assertEqual(app_mod.list_workspace_files(), [b, a])
