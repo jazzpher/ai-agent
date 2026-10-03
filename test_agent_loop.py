@@ -288,3 +288,65 @@ class NoLimitTest(unittest.TestCase):
         for out in gen:
             pass
         self.assertIn("cancel", out.lower())
+
+
+class HeartbeatTest(unittest.TestCase):
+    def tearDown(self):
+        patch.stopall()
+
+    def test_slow_tool_keeps_stream_alive(self):
+        patch.object(agent_mod.session_manager, "get_or_create", return_value=Sbx("docker")).start()
+        patch.object(agent_mod, "HEARTBEAT_SECONDS", 0.05).start()
+        patch.dict(agent_mod.TOOL_FUNCTIONS,
+                   {"run_bash": lambda **kw: time.sleep(0.4) or {"status": "success", "output": "ok"}}).start()
+        a = make_agent(FakeClient([("tool", "run_bash", {"command": "slow"}), ("text", "done")]))
+        outs = []
+        with patch.dict(os.environ, {"AGENT_VERIFY": "off"}):
+            for o in a.chat_stream("go"):
+                outs.append(o)
+        beats = [o for o in outs if "Tumatakbo ang run_bash" in o]
+        self.assertGreaterEqual(len(beats), 3)
+        self.assertIn("done", outs[-1])
+        # heartbeat text is transient, not kept in the final message
+        self.assertNotIn("Tumatakbo ang run_bash...", outs[-1])
+
+    def test_slow_sandbox_creation_keeps_stream_alive(self):
+        def slow_create(*a, **k):
+            time.sleep(0.4)
+            return Sbx("docker")
+        patch.object(agent_mod.session_manager, "get_or_create", side_effect=slow_create).start()
+        patch.object(agent_mod, "HEARTBEAT_SECONDS", 0.05).start()
+        patch.dict(agent_mod.TOOL_FUNCTIONS,
+                   {"run_bash": lambda **kw: {"status": "success", "output": "ok"}}).start()
+        a = make_agent(FakeClient([("tool", "run_bash", {"command": "ls"}), ("text", "done")]))
+        outs = []
+        with patch.dict(os.environ, {"AGENT_VERIFY": "off"}):
+            for o in a.chat_stream("go"):
+                outs.append(o)
+        self.assertGreaterEqual(len([o for o in outs if "Inihahanda ang sandbox" in o]), 3)
+
+    def test_tool_exception_still_reported(self):
+        def boom(**kw): raise ValueError("x")
+        patch.object(agent_mod.session_manager, "get_or_create", return_value=Sbx("docker")).start()
+        patch.dict(agent_mod.TOOL_FUNCTIONS, {"run_bash": boom}).start()
+        a = make_agent(FakeClient([("tool", "run_bash", {"command": "ls"}), ("text", "done")]))
+        with patch.dict(os.environ, {"AGENT_VERIFY": "off"}):
+            out = run(a)
+        self.assertIn("done", out)
+
+
+class SandboxSetupTest(unittest.TestCase):
+    def test_missing_core_packages_only_lists_unimportable(self):
+        import sandbox_session as ss
+        with patch("importlib.util.find_spec", side_effect=lambda m: None if m == "pandas" else object()):
+            self.assertEqual(ss.missing_core_packages(), ["pandas"])
+
+    def test_venv_reuses_host_packages_and_skips_pip_upgrade(self):
+        import sandbox_session as ss
+        calls = []
+        with patch.object(ss.subprocess, "run", side_effect=lambda cmd, **k: calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr="")), \
+                patch.object(ss, "missing_core_packages", return_value=[]):
+            ss.SessionSandbox("t1", force_mode="venv")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--system-site-packages", calls[0])
+        self.assertFalse(any("--upgrade" in c for c in calls))
