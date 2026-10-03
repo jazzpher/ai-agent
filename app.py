@@ -253,6 +253,31 @@ def keepalive(gen, interval=None, cancel=None):
         raise
 
 
+def list_workspace_files(agent=None):
+    """Files in the workspace, newest first, for the download panel."""
+    found = []
+    try:
+        for root, dirs, names in os.walk(WORKSPACE_DIR):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
+            for n in names:
+                if n.startswith("."):
+                    continue
+                path = os.path.join(root, n)
+                try:
+                    found.append((os.path.getmtime(path), path))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    found.sort(reverse=True)
+    return [p for _, p in found[:30]] or None
+
+
+def refresh_panels(agent):
+    """Refresh the download list and the Session sandbox status after a turn."""
+    return list_workspace_files(agent), format_sandbox_status(agent)
+
+
 def start_chat(message, history, file_paths, agent: AIAgent):
     """
     Streaming entry point. Yields 8 values per yield:
@@ -305,8 +330,9 @@ def start_chat(message, history, file_paths, agent: AIAgent):
     closed = False
     waited = 0.0
     try:
-        for kind, item in keepalive(chat_stream(message, history, file_paths, agent),
-                                    cancel=agent.cancel):
+        # No cancel on disconnect: a dropped browser stream must not kill the work
+        # (files still get written). The Stop button is the only thing that cancels.
+        for kind, item in keepalive(chat_stream(message, history, file_paths, agent)):
             if kind == "beat":
                 waited += KEEPALIVE_SECONDS
                 if history:  # tiny visible change so the update is really sent
@@ -485,6 +511,9 @@ def build_app():
                             file_status = gr.Textbox(value="No files uploaded", interactive=False,
                                 show_label=False, scale=4, elem_id="file-status", container=False)
                             clear_btn = gr.Button("New chat", scale=0, elem_id="clear-button")
+                        files_box = gr.File(label="Files in workspace (download)", file_count="multiple",
+                                            interactive=False, elem_id="workspace-files")
+                        refresh_files_btn = gr.Button("Refresh files", scale=0, elem_id="refresh-files")
                         example_dd = gr.Dropdown(choices=[
                             "Choose a starter prompt...",
                             "Help me outline a project plan",
@@ -503,7 +532,7 @@ def build_app():
             with gr.Tab("Session", id="session"):
                 with gr.Column(elem_id="session-panel"):
                     gr.Markdown("## Behind this conversation\nUsage, tools and sandbox details for this session.")
-                    sandbox_md = gr.Markdown(lambda: format_sandbox_status(AIAgent()))
+                    sandbox_md = gr.Markdown("Sandbox: not started. It starts only when a tool needs it.")
                     with gr.Accordion("Usage & metrics", open=True):
                         metrics_md = gr.Markdown(lambda: format_metrics(AIAgent()))
                     with gr.Accordion(f"Available tools ({len(TOOL_FUNCTIONS)})", open=False):
@@ -548,12 +577,17 @@ def build_app():
             start_chat,
             inputs=chat_inputs,
             outputs=chat_outputs,
-        )
+        ).then(refresh_panels, inputs=[agent_state], outputs=[files_box, sandbox_md],
+               show_progress="hidden")
         msg.submit(
             start_chat,
             inputs=chat_inputs,
             outputs=chat_outputs,
-        )
+        ).then(refresh_panels, inputs=[agent_state], outputs=[files_box, sandbox_md],
+               show_progress="hidden")
+        # Also usable after a dropped connection ("Reconnected"): reload the panels on demand.
+        refresh_files_btn.click(refresh_panels, inputs=[agent_state], outputs=[files_box, sandbox_md])
+        app.load(refresh_panels, inputs=[agent_state], outputs=[files_box, sandbox_md])
 
         # Approval banner: poll for a pending request from the running agent
         def poll_approval(agent: AIAgent):
@@ -567,7 +601,7 @@ def build_app():
             approval_gate.answer(agent.session_id, approved)
             return gr.update(visible=False), gr.update(visible=False)
 
-        approval_timer = gr.Timer(1.0)
+        approval_timer = gr.Timer(2.0)
         approval_timer.tick(poll_approval, inputs=[agent_state], outputs=[approval_md, approval_row],
                             show_progress="hidden")
         approve_btn.click(lambda a: answer_approval(a, True), inputs=[agent_state],
