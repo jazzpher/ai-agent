@@ -179,6 +179,9 @@ def chat_stream(message: str, history: list, file_paths, agent: AIAgent):
 
 def clear_chat(agent: AIAgent):
     """Clear chat and destroy the old sandbox."""
+    if getattr(agent, "_ui_running", False):
+        # Never destroy an active worker's sandbox or start a duplicate run.
+        return agent, getattr(agent, "_ui_history", []), gr.update(), gr.update(), gr.update(), gr.update()
     agent.cleanup_sandbox()
     agent.reset()
     # Create a new agent (new session)
@@ -394,6 +397,51 @@ def start_chat(message, history, file_paths, agent: AIAgent):
             )
 
 
+# Short request / durable-in-process run state. A dropped SSE connection
+# no longer owns the generator or loses the last reply. Restart still loses it.
+def begin_background_chat(message, history, file_paths, agent):
+    import threading
+    if getattr(agent, "_ui_running", False):
+        return poll_background_chat(agent)
+    if not message.strip() and not file_paths:
+        return poll_background_chat(agent)
+    agent._ui_running = True
+    agent._ui_history = list(history or [])
+    agent._ui_started = time.monotonic()
+    agent.cancel_requested = False
+
+    def work():
+        try:
+            for h, metrics in chat_stream(message, history, file_paths, agent):
+                agent._ui_history = [dict(m) for m in h]
+                agent._ui_metrics = metrics
+        except Exception as error:
+            agent._ui_history = list(getattr(agent, "_ui_history", [])) + [
+                {"role": "assistant", "content": "Run failed: " + type(error).__name__ + ": " + str(error)[:300]}]
+        finally:
+            agent._ui_running = False
+    threading.Thread(target=work, daemon=True).start()
+    return poll_background_chat(agent)
+
+
+def poll_background_chat(agent):
+    history = getattr(agent, "_ui_history", None)
+    running = getattr(agent, "_ui_running", False)
+    if history is None:
+        return (gr.update(), gr.update(), gr.update(), gr.update(),
+                gr.update(), gr.update(), gr.update(), gr.update())
+    shown = [dict(m) for m in history]
+    if running and shown and shown[-1].get("role") == "assistant":
+        elapsed = int(time.monotonic() - agent._ui_started)
+        shown[-1]["content"] += f"\n\n⏳ Running... {elapsed}s"
+    return (shown, getattr(agent, "_ui_metrics", gr.update()),
+            gr.update(visible=not running, interactive=not running),
+            gr.update(visible=running, interactive=running, value="Stop"),
+            gr.update() if running else gr.update(value="No files uploaded"),
+            gr.update() if running else [],
+            gr.update() if running else gr.update(value=""), gr.update())
+
+
 # ============================================================
 # UI BUILDER
 # ============================================================
@@ -590,20 +638,23 @@ def build_app():
         ]
 
         send_btn.click(
-            start_chat,
+            begin_background_chat,
             inputs=chat_inputs,
-            outputs=chat_outputs,
+            outputs=chat_outputs, queue=False,
         ).then(refresh_panels, inputs=[agent_state], outputs=[files_box, sandbox_md],
                show_progress="hidden")
         msg.submit(
-            start_chat,
+            begin_background_chat,
             inputs=chat_inputs,
-            outputs=chat_outputs,
+            outputs=chat_outputs, queue=False,
         ).then(refresh_panels, inputs=[agent_state], outputs=[files_box, sandbox_md],
                show_progress="hidden")
         # Also usable after a dropped connection ("Reconnected"): reload the panels on demand.
         refresh_files_btn.click(refresh_panels, inputs=[agent_state], outputs=[files_box, sandbox_md])
         app.load(load_files_only, inputs=None, outputs=[files_box])
+        chat_timer = gr.Timer(3.0)
+        chat_timer.tick(poll_background_chat, inputs=[agent_state], outputs=chat_outputs,
+                        queue=False, show_progress="hidden")
 
         # Approval banner: poll for a pending request from the running agent
         def poll_approval(agent: AIAgent):
@@ -619,7 +670,7 @@ def build_app():
 
         approval_timer = gr.Timer(2.0)
         approval_timer.tick(poll_approval, inputs=[agent_state], outputs=[approval_md, approval_row],
-                            show_progress="hidden")
+                            queue=False, show_progress="hidden")
         approve_btn.click(lambda a: answer_approval(a, True), inputs=[agent_state],
                           outputs=[approval_md, approval_row])
         deny_btn.click(lambda a: answer_approval(a, False), inputs=[agent_state],
