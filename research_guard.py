@@ -11,7 +11,8 @@ from urllib.parse import quote_plus, urlparse
 
 import httpx
 
-RESEARCH_TOOLS = ("web_search", "fetch_page", "image_search")
+RESEARCH_TOOLS = ("web_search", "fetch_page", "image_search", "job_search")
+MAX_JOB_SEARCHES = 3
 MAX_SEARCHES = 6
 MAX_FETCHES = 14
 MAX_EMPTY_SEARCHES = 3
@@ -34,9 +35,10 @@ OFFICIAL_PAGES = {
 }
 
 JOB_HINT = (
-    "Job research: PhilJobNet (https://philjobnet.gov.ph/) is fetchable. JobStreet and Indeed "
-    "block page fetches, so use only what their search-result snippets say, and label it "
-    "'snippet only' with the date shown. Never invent vacancy counts, employers or salaries."
+    "Job research: call job_search first (JobStreet + Kalibrr listings with source, location and "
+    "date). Indeed/Glassdoor block fetches; PhilJobNet posts usually show no date or location, so "
+    "do not call them local. Label each result's source, location and date, or 'unverified'. "
+    "Never invent vacancy counts, employers or salaries."
 )
 
 _STOP = {"the", "and", "for", "with", "2026", "site", "current", "latest", "best", "free",
@@ -105,6 +107,7 @@ class ResearchLedger:
         self._now = now
         self.started = now()
         self.searches = 0
+        self.job_searches = 0
         self.fetches = 0
         self.empty_streak = 0
         self.refusals = 0
@@ -128,7 +131,13 @@ class ResearchLedger:
 
     def gate(self, tool: str, args: dict):
         """Return a refusal message when this call is over budget, else None."""
-        if tool not in ("web_search", "fetch_page", "image_search"):
+        if tool not in ("web_search", "fetch_page", "image_search", "job_search"):
+            return None
+        if tool == "job_search":
+            if self.job_searches >= MAX_JOB_SEARCHES:
+                self.refusals += 1
+                return (f"Job search limit ({MAX_JOB_SEARCHES}) reached. Write the final answer from "
+                        "the listings already returned; mark anything else 'unverified'.")
             return None
         done = ("Research budget reached. Do not call more search or fetch tools. Write the final "
                 "answer now from the evidence already gathered, and mark anything not backed by a "
@@ -183,6 +192,13 @@ class ResearchLedger:
                         self.snippets[_norm_url(m.group(1))] = (m.group(1), block)
             else:
                 self.empty_streak += 1
+        elif tool == "job_search":
+            self.job_searches += 1
+            if ok:
+                for block in out.split("### ")[1:]:
+                    m = re.search(r"URL:\s*(\S+)", block)
+                    if m:
+                        self.snippets[_norm_url(m.group(1))] = (m.group(1), block)
         elif tool == "fetch_page":
             url = str((args or {}).get("url", ""))
             key = _norm_url(url)
