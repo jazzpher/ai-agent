@@ -279,7 +279,7 @@ For research, comparisons of current products/policies, deep search, prices, job
 - Copy figures and plan names exactly as the fetched page states them. If the page shows "Free $0" do not call it a trial. Never state that a platform supports a feature (a language, a runtime, a limit) unless a fetched page says so; otherwise write "unverified".
 - Every table row needs a source URL you actually fetched or got from search. Put "unverified" in any cell you could not confirm. A short honest table beats a full wrong one.
 - If a search returns nothing twice, stop searching and fetch known pages, or say what evidence is missing.
-- For job questions: only report vacancies/salaries seen in a fetched page or a search snippet, with the source and date; JobStreet and Indeed cannot be fetched, so snippet-only. No evidence means say so.
+- For job questions: call `job_search` FIRST (JobStreet + Kalibrr listings with source, exact location, posting date, salary). Report only rows it returned, grouped LOCAL (Lucena/Quezon province) vs NEARBY, and for each row give source, location and date exactly as shown, or write "unverified" / "not shown". Never call a nearby town "Lucena". Indeed/Glassdoor were not checked and PhilJobNet posts lack dates, so say that. No rows means say so.
 - The app checks your final answer against the fetched text and flags what does not match, so be exact.
 - Start with 2-4 targeted searches and 3-6 strong sources. Expand only when evidence is missing; do not promise hundreds of postings or exhaustive statistics.
 - Use today's date above as the anchor. 2026 is the current year, not a forecast based on 2024-2025. Older statistics may be the latest available, but label their dates and gaps.
@@ -1052,6 +1052,7 @@ RULES
             r"\b(research|deep search|deep web|current|latest|hosting tiers|job market|job (?:search|postings?|openings?)|vacanc\w+|hiring)\b",
             user_message, re.I))
         research_search_done = False
+        job_request = bool(re.search(r"\b(job|jobs|trabaho|vacanc\w+|hiring|openings?|postings?)\b", user_message, re.I))
         self._ledger = research_guard.ResearchLedger() if research_request else None
         if self._ledger is not None:
             self._ledger.set_topic(user_message)
@@ -1088,7 +1089,7 @@ RULES
                 model=self.model,
                 messages=self.messages,
                 tools=TOOL_DEFINITIONS,
-                tool_choice=({"type": "function", "function": {"name": "web_search"}}
+                tool_choice=({"type": "function", "function": {"name": "job_search" if job_request else "web_search"}}
                              if research_request and not research_search_done else "auto"),
                 temperature=DEFAULT_TEMPERATURE,
                 max_tokens=DEFAULT_MAX_TOKENS,
@@ -1254,7 +1255,7 @@ RULES
                 yield full_response
                 return
 
-            if any(t.get("name") == "web_search" for t in tool_calls_data.values()):
+            if any(t.get("name") in ("web_search", "job_search") for t in tool_calls_data.values()):
                 research_search_done = True
             _stream_retries = 0
             if content_chunks:

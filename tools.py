@@ -573,6 +573,17 @@ def web_search(query: str, max_results: int = 5, session_id: str = None) -> dict
             "output": _truncate("\n".join(results) + ("\n" + hints if hints else ""), max_chars=6500)}
 
 
+def job_search(where: str = "Lucena City Quezon", keywords: str = "", max_results: int = 15,
+               session_id: str = None) -> dict:
+    """Job listings from JobStreet and Kalibrr JSON endpoints, with source, location and date per row."""
+    import job_search as js
+    try:
+        return js.search(where=where or "Lucena City Quezon", keywords=keywords or "",
+                         max_results=min(max(int(max_results or 15), 1), 25))
+    except Exception as e:
+        return {"status": "error", "output": f"Job search failed: {e}"}
+
+
 def fetch_page(url: str, max_chars: int = 12000, session_id: str = None) -> dict:
     """Fetch a URL and return the main text content (trafilatura-extracted)."""
     if not (url.startswith("http://") or url.startswith("https://")):
@@ -1046,6 +1057,26 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "job_search",
+            "description": (
+                "Real job listings (JobStreet + Kalibrr) for a place, each with source, exact location, "
+                "posting date and salary as the source shows them. Use this FIRST for any job/vacancy "
+                "question. Results are split into LOCAL and NEARBY; report only what it returns."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "where": {"type": "string", "description": "Place, e.g. 'Lucena City Quezon' (default)."},
+                    "keywords": {"type": "string", "description": "Optional role keywords, e.g. 'data analyst'."},
+                    "max_results": {"type": "integer", "description": "Local rows to show (default 15)."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "fetch_page",
             "description": (
                 "Fetch a URL and return the main text content (article body). "
@@ -1267,6 +1298,7 @@ TOOL_FUNCTIONS = {
     "list_files": list_files,
     "web_search": web_search,
     "fetch_page": fetch_page,
+    "job_search": job_search,
     "pip_install": pip_install,
     "run_python": run_python,
     "create_letter_docx": create_letter_docx,

@@ -73,7 +73,7 @@ def test_excerpts_pick_relevant_sentences_and_parse_verdict():
 def test_official_hints_and_query_simplifying():
     h = rg.official_hints('compare Render, Railway and Netlify free tiers')
     assert 'render.com/pricing' in h and 'railway.com/pricing' in h
-    assert 'philjobnet' in rg.official_hints('job openings in Lucena Quezon')
+    assert 'job_search' in rg.official_hints('job openings in Lucena Quezon')
     assert rg.official_hints('cat pictures') == ''
     assert len(rg.simplify_query('compare the best free hosting tiers for small web apps in 2026 with sources').split()) <= 8
 
