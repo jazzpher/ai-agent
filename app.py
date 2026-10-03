@@ -207,6 +207,51 @@ def stop_chat(agent: AIAgent):
     return gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False, value="Stop")
 
 
+KEEPALIVE_SECONDS = 8.0
+
+
+def keepalive(gen, interval=None, cancel=None):
+    """Iterate `gen` in a worker thread; yield ("beat", None) whenever it stays
+    silent for `interval` seconds (model call, self-check, approval wait...), so
+    the browser stream never idles out. Yields ("item", value) otherwise.
+    If the consumer goes away (GeneratorExit) the worker is asked to stop."""
+    import queue
+    import threading
+    interval = KEEPALIVE_SECONDS if interval is None else interval
+    q = queue.Queue()
+    stop = threading.Event()
+    DONE = object()
+
+    def pump():
+        try:
+            for item in gen:
+                q.put(("item", item))
+                if stop.is_set():
+                    break
+            q.put(("done", DONE))
+        except BaseException as e:  # noqa: BLE001 - re-raised in the consumer
+            q.put(("error", e))
+
+    threading.Thread(target=pump, daemon=True).start()
+    try:
+        while True:
+            try:
+                kind, val = q.get(timeout=interval)
+            except queue.Empty:
+                yield ("beat", None)
+                continue
+            if kind == "done":
+                return
+            if kind == "error":
+                raise val
+            yield ("item", val)
+    except GeneratorExit:
+        stop.set()
+        if cancel:
+            cancel()
+        raise
+
+
 def start_chat(message, history, file_paths, agent: AIAgent):
     """
     Streaming entry point. Yields 8 values per yield:
@@ -256,11 +301,28 @@ def start_chat(message, history, file_paths, agent: AIAgent):
     )
 
     # ---- Phase 2: Run the stream (keep Stop visible) ----
+    closed = False
+    waited = 0.0
     try:
-        for h, metrics in chat_stream(message, history, file_paths, agent):
+        for kind, item in keepalive(chat_stream(message, history, file_paths, agent),
+                                    cancel=agent.cancel):
+            if kind == "beat":
+                waited += KEEPALIVE_SECONDS
+                if history:  # tiny visible change so the update is really sent
+                    shown = [dict(m) for m in history]
+                    shown[-1]["content"] = (str(shown[-1].get("content", ""))
+                                            + f"\n\n⏳ Gumagana pa... {int(waited)}s\n")
+                    yield (shown, no_change, send_state, stop_state,
+                           cur_status, list(file_paths or []), no_change, no_change)
+                continue
+            waited = 0.0
+            h, metrics = item
             history = h  # preserve the streamed answer when final cleanup runs
             yield (h, metrics, send_state, stop_state,
                    cur_status, list(file_paths or []), no_change, no_change)
+    except GeneratorExit:
+        closed = True  # client disconnected: a generator must not yield now
+        raise
     except Exception as e:
         # Surface the error in the metrics panel so the user can see it
         err = f"Error: {type(e).__name__}: {e}"
@@ -273,16 +335,17 @@ def start_chat(message, history, file_paths, agent: AIAgent):
     finally:
         # ---- Phase 3: Exit "running" mode ----
         # Restore buttons, clear uploaded files, clear msg textbox
-        yield (
-            history if history else [],
-            gr.update(),       # keep metrics as-is
-            gr.update(visible=True, interactive=True),     # show Send
-            gr.update(visible=False, interactive=False, value="Stop"),  # hide Stop
-            gr.update(value="No files uploaded"),  # clear file_status text
-            [],                                     # clear uploaded_files state
-            gr.update(value=""),                     # clear msg textbox
-            no_change,                               # keep agent
-        )
+        if not closed:
+            yield (
+                history if history else [],
+                gr.update(),       # keep metrics as-is
+                gr.update(visible=True, interactive=True),     # show Send
+                gr.update(visible=False, interactive=False, value="Stop"),  # hide Stop
+                gr.update(value="No files uploaded"),  # clear file_status text
+                [],                                     # clear uploaded_files state
+                gr.update(value=""),                     # clear msg textbox
+                no_change,                               # keep agent
+            )
 
 
 # ============================================================
