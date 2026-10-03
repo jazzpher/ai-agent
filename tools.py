@@ -45,11 +45,10 @@ def get_sandbox_status(session_id: str = None) -> dict:
     """Public helper for the UI: describe the current sandbox mode."""
     if session_id:
         try:
-            sb = session_manager.get_or_create(session_id)
-            return sb.get_status()
+            return session_manager.peek_status(session_id)
         except Exception:
             pass
-    return {"mode": "unknown", "available": False}
+    return {"mode": "not started", "available": False}
 
 
 # ============================================================
