@@ -16,7 +16,7 @@ DEFAULT_MODEL = os.environ.get("AI_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
 
 # Agent settings
 MAX_ITERATIONS = 20                    # Maximum tool calls per conversation turn
-MAX_TOTAL_SECONDS = 600                # Wall-clock budget per chat_stream call
+MAX_TOTAL_SECONDS = 120                # Wall-clock budget per chat_stream call
 MAX_CONTEXT_MESSAGES = 50              # Conversation trim threshold
 DEFAULT_MAX_TOKENS = 8192
 DEFAULT_TEMPERATURE = 0.3
