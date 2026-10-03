@@ -16,6 +16,7 @@ from pathlib import Path
 
 import gradio as gr
 
+from ui_design import CSS, HEADER, EMPTY_CHAT
 from server_settings import launch_settings
 from agent import AIAgent
 from config import NVIDIA_API_KEY, DEFAULT_MODEL, WORKSPACE_DIR
@@ -52,9 +53,9 @@ def copy_uploads_to_workspace(file_paths) -> tuple[list[str], str]:
             shutil.copy2(file_path, dest)
             size = os.path.getsize(dest)
             workspace_paths.append(dest)
-            info_lines.append(f"📎 {filename} ({size:,} bytes)")
+            info_lines.append(f"{filename} ({size:,} bytes)")
         except Exception as e:
-            info_lines.append(f"❌ {os.path.basename(file_path)}: {e}")
+            info_lines.append(f"Error: {os.path.basename(file_path)}: {e}")
 
     return workspace_paths, "\n".join(info_lines) if info_lines else "No files uploaded"
 
@@ -66,11 +67,10 @@ def copy_uploads_to_workspace(file_paths) -> tuple[list[str], str]:
 def format_metrics(agent) -> str:
     m = agent.get_metrics()
     sandbox_mode = m.get("sandbox_mode", "unknown")
-    sandbox_emoji = "🐳" if sandbox_mode == "docker" else "🛡️"
     sandbox_pkg_count = m.get("sandbox_packages", 0)
 
     return (
-        f"**📊 Session metrics**\n\n"
+        f"**Session metrics**\n\n"
         f"| Metric | Value |\n"
         f"|---|---|\n"
         f"| Session | `{m['session_id']}` |\n"
@@ -83,7 +83,7 @@ def format_metrics(agent) -> str:
         f"| Completion tokens | {m['completion_tokens']:,} |\n"
         f"| **Total tokens** | **{m['total_tokens']:,}** |\n"
         f"| **Est. cost** | **${m['estimated_cost_usd']:.4f}** |\n"
-        f"| {sandbox_emoji} Sandbox | {sandbox_mode} ({sandbox_pkg_count} pkgs) |\n"
+        f"| Sandbox | {sandbox_mode} ({sandbox_pkg_count} pkgs) |\n"
     )
 
 
@@ -94,8 +94,8 @@ def format_metrics(agent) -> str:
 def approval_warning() -> str:
     mode = approval_mode()
     if mode == "off":
-        return "🚨 Walang Docker at **naka-off ang approval** (AGENT_APPROVAL=off). Risky commands tatakbo agad."
-    return ("🔐 Walang Docker: risky commands (delete, overwrite, pip install, atbp.) "
+        return "Walang Docker at **naka-off ang approval** (AGENT_APPROVAL=off). Risky commands tatakbo agad."
+    return ("Walang Docker: risky commands (delete, overwrite, pip install, atbp.) "
             "ay hihingi muna ng approval mo.")
 
 
@@ -104,11 +104,11 @@ def format_sandbox_status(agent) -> str:
     mode = status.get("mode", "unknown")
 
     if mode == "not started":
-        return "🛡️ Sandbox: not started. It starts only when a tool needs it."
+        return "Sandbox: not started. It starts only when a tool needs it."
 
     if mode == "docker":
         return (
-            f"🐳 **Docker sandbox: ACTIVE**\n"
+            f"**Docker sandbox: ACTIVE**\n"
             f"- Session: `{status.get('session_id', '?')}`\n"
             f"- Uptime: {status.get('uptime_seconds', 0)}s\n"
             f"- Packages: {len(status.get('packages_installed', []))}\n\n"
@@ -120,16 +120,16 @@ def format_sandbox_status(agent) -> str:
         if len(pkgs) > 5:
             pkg_preview += f" (+{len(pkgs) - 5} more)"
         return (
-            f"🛡️ **Sandbox: ACTIVE (venv mode)**\n"
+            f"**Sandbox: ACTIVE (venv mode)**\n"
             f"- Session: `{status.get('session_id', '?')}`\n"
             f"- Uptime: {status.get('uptime_seconds', 0)}s\n"
             f"- Packages: {pkg_preview or 'installing...'}\n\n"
-            f"⚠️ A venv isolates packages, not files or secrets. Commands can modify this server.\n\n"
+            f"A venv isolates packages, not files or secrets. Commands can modify this server.\n\n"
             + approval_warning()
         )
     else:
         return (
-            f"⏳ **Sandbox: Initializing...**\n\n"
+            f"**Sandbox: Initializing...**\n\n"
             f"The sandbox will be created on first use."
         )
 
@@ -151,7 +151,7 @@ def chat_stream(message: str, history: list, file_paths, agent: AIAgent):
     # Append file info to user message
     display_message = message
     if processed_paths:
-        display_message += "\n\n📎 Uploaded files:\n"
+        display_message += "\n\nUploaded files:\n"
         for fp in processed_paths:
             display_message += f"- `{os.path.basename(fp)}`\n"
 
@@ -162,7 +162,7 @@ def chat_stream(message: str, history: list, file_paths, agent: AIAgent):
         {"role": "assistant", "content": ""},
     ]
 
-    history[-1]["content"] = "⏳ Preparing your request…"
+    history[-1]["content"] = "Preparing your request..."
     yield history, format_metrics(agent)
     agent.refresh_providers()  # picks up Settings changes without restart
 
@@ -196,7 +196,7 @@ def handle_upload(files):
         path = getattr(f, "name", None) or (f if isinstance(f, str) else None)
         if path:
             paths.append(path)
-            info.append(f"📎 {os.path.basename(path)}")
+            info.append(f"{os.path.basename(path)}")
 
     return (" | ".join(info) if info else "No files uploaded"), paths
 
@@ -204,7 +204,7 @@ def handle_upload(files):
 def stop_chat(agent: AIAgent):
     """User clicked the stop button. Cancel the running agent and revert UI."""
     agent.cancel()
-    return gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False, value="⏹️")
+    return gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False, value="Stop")
 
 
 def start_chat(message, history, file_paths, agent: AIAgent):
@@ -236,14 +236,14 @@ def start_chat(message, history, file_paths, agent: AIAgent):
 
     # Snapshot of "current" file status so we can re-emit it during streaming
     cur_status = (
-        "📎 " + ", ".join(os.path.basename(p) for p in file_paths)
+        ", ".join(os.path.basename(p) for p in file_paths)
         if file_paths
         else "No files uploaded"
     )
 
     # ---- Phase 1: Enter "running" mode (swap Send -> Stop) ----
     send_state = gr.update(visible=False, interactive=False)
-    stop_state = gr.update(visible=True, interactive=True, variant="stop", value="⏹️ Stop")
+    stop_state = gr.update(visible=True, interactive=True, variant="stop", value="Stop")
     yield (
         history or [],
         format_metrics(agent),
@@ -263,7 +263,7 @@ def start_chat(message, history, file_paths, agent: AIAgent):
                    cur_status, list(file_paths or []), no_change, no_change)
     except Exception as e:
         # Surface the error in the metrics panel so the user can see it
-        err = f"❌ {type(e).__name__}: {e}"
+        err = f"Error: {type(e).__name__}: {e}"
         if history:
             history.append({"role": "assistant", "content": err})
         else:
@@ -277,7 +277,7 @@ def start_chat(message, history, file_paths, agent: AIAgent):
             history if history else [],
             gr.update(),       # keep metrics as-is
             gr.update(visible=True, interactive=True),     # show Send
-            gr.update(visible=False, interactive=False, value="⏹️"),  # hide Stop
+            gr.update(visible=False, interactive=False, value="Stop"),  # hide Stop
             gr.update(value="No files uploaded"),  # clear file_status text
             [],                                     # clear uploaded_files state
             gr.update(value=""),                     # clear msg textbox
@@ -297,7 +297,7 @@ def build_providers_panel():
     saved = load_providers()
     saved += [{"preset": "Custom", "base_url": "", "model": "", "api_key": "", "enabled": False}] * (MAX_SLOTS - len(saved))
 
-    with gr.Accordion("🔑 Providers & API keys", open=not any(p["api_key"] for p in saved)):
+    with gr.Accordion("Providers & API keys", open=False, elem_id="provider-settings"):
         gr.Markdown("Top = tried first. If it is rate-limited or down, the next one is used. "
                     "UI saves go to `providers.json`. On Render free these are temporary. "
                     "Set AGENT_PROVIDERS_JSON in Render Environment for settings that survive restarts.")
@@ -306,8 +306,7 @@ def build_providers_panel():
         slots = []
         for i in range(MAX_SLOTS):
             s = saved[i]
-            with gr.Group():
-                gr.Markdown(f"**Provider {i + 1}**")
+            with gr.Accordion(f"Provider {i + 1} - {s['preset']}", open=False, elem_classes=["provider-slot"]):
                 preset = gr.Dropdown(list(PRESETS), value=s["preset"], label="Preset")
                 base = gr.Textbox(value=s["base_url"], label="Base URL")
                 model = gr.Textbox(value=s["model"], label="Model")
@@ -338,8 +337,8 @@ def build_providers_panel():
             try:
                 ids = list_models(base_url.strip(), k)
             except Exception as e:
-                return gr.update(), f"❌ Hindi makuha ang models: {type(e).__name__}: {str(e).replace(k, '***')[:200]}"
-            return gr.update(choices=ids), f"✅ {len(ids)} models. Pumili sa dropdown para ilagay sa Model."
+                return gr.update(), f" Hindi makuha ang models: {type(e).__name__}: {str(e).replace(k, '***')[:200]}"
+            return gr.update(choices=ids), f" {len(ids)} models. Pumili sa dropdown para ilagay sa Model."
 
         def _benchmark(base_url, model_name, typed_key, idx):
             k = _saved_key(typed_key, idx)
@@ -347,7 +346,7 @@ def build_providers_panel():
                 return format_benchmark(model_name.strip(),
                                         benchmark_model(base_url.strip(), model_name.strip(), k))
             except Exception as e:
-                return f"❌ {type(e).__name__}: {str(e).replace(k, '***')[:200]}"
+                return f" {type(e).__name__}: {str(e).replace(k, '***')[:200]}"
 
         def _test(base_url, model_name, typed_key, idx):
             k = typed_key or (load_providers() + [{}] * MAX_SLOTS)[idx].get("api_key", "")
@@ -373,7 +372,7 @@ def build_providers_panel():
                               "vision": bool(has_vision)})
                 hints += [gr.update(value=""), f"Key: {mask_key(k)}"]
             save_providers(items)
-            return hints + ["✅ Saved."]
+            return hints + [" Saved."]
 
         save_btn = gr.Button("Save providers", variant="primary")
         status = gr.Markdown()
@@ -385,170 +384,69 @@ def build_providers_panel():
 
 
 def build_app():
-    theme = gr.themes.Soft(primary_hue="blue", secondary_hue="green")
-
-    css = """
-    .sandbox-info {
-        background: #e8f5e9;
-        border: 1px solid #4caf50;
-        border-radius: 8px;
-        padding: 10px;
-        margin: 10px 0;
-        font-size: 13px;
-    }
-    .danger-zone {
-        background: #ffebee;
-        border: 1px solid #f44336;
-        border-radius: 8px;
-        padding: 10px;
-        margin: 10px 0;
-        font-size: 13px;
-    }
-    .metrics-panel {
-        background: #f5f5f5;
-        border: 1px solid #ddd;
-        border-radius: 8px;
-        padding: 10px;
-        margin: 10px 0;
-        font-size: 12px;
-        font-family: monospace;
-    }
-    @media (max-width: 640px) {
-        .gradio-container { padding: 8px !important; }
-        #agent-chat { height: 50svh !important; min-height: 260px; }
-        input, textarea { font-size: 16px !important; }
-    }
-    footer { display: none !important; }
-    """
-
-    with gr.Blocks(
-        title="🤖 AI Agent - Sandboxed Local Assistant",
-        theme=theme,
-        css=css,
-    ) as app:
-
-        # ---- Header ----
-        gr.Markdown(
-            """
-            # 🤖 AI Agent
-            **Private AI assistant** with streaming responses, file tools,
-            temporary sandbox, and a real Docker sandbox option.
-            """
-        )
-
+    theme = gr.themes.Base(primary_hue="emerald", neutral_hue="stone", font=["system-ui"])
+    with gr.Blocks(title="AI Agent | Your workspace", theme=theme, css=CSS) as app:
+        gr.HTML(HEADER)
         if os.environ.get("RENDER", "").lower() == "true":
-            gr.Markdown("⚠️ Render free: local keys, memory, files and installed tools can disappear "
-                        "on restart or idle sleep. This service uses a venv, not Docker isolation. "
-                        "Use only your own login and do not add unrelated secrets.")
-
-        # Per-session agent (created fresh for each browser session)
+            gr.Markdown("Render free: local keys, memory and files may disappear on restart. "
+                        "Tools use a venv, not Docker isolation. Use only your own login.",
+                        elem_id="render-notice")
         agent_state = gr.State(lambda: AIAgent())
-
-        with gr.Row():
-            # ---- LEFT: chat + input ----
-            with gr.Column(scale=4):
-                approval_md = gr.Markdown(visible=False, elem_id="approval-banner")
-                with gr.Row(visible=False) as approval_row:
-                    approve_btn = gr.Button("✅ Approve", variant="primary")
-                    deny_btn = gr.Button("❌ Deny", variant="stop")
-                chatbot = gr.Chatbot(
-                    label="Chat",
-                    elem_id="agent-chat",
-                    height=550,
-                    type="messages",   # Gradio 5.x required
-                    allow_tags=False,  # Gradio 5.50+ default change
-                    show_label=False,
-                )
-
-                with gr.Row():
-                    upload_btn = gr.UploadButton(
-                        "📎 Upload",
-                        file_count="multiple",
-                        file_types=["file"],
-                        variant="secondary",
-                        scale=0,
+        with gr.Tabs(elem_id="workspace-tabs"):
+            with gr.Tab("Chat", id="chat"):
+                with gr.Column(elem_id="chat-workspace"):
+                    gr.Markdown("**Conversation** &nbsp; A fresh place to start", elem_id="conversation-heading")
+                    approval_md = gr.Markdown(visible=False, elem_id="approval-banner")
+                    with gr.Row(visible=False, elem_id="approval-actions") as approval_row:
+                        approve_btn = gr.Button("Approve", variant="primary")
+                        deny_btn = gr.Button("Deny", variant="stop")
+                    chatbot = gr.Chatbot(
+                        label="Conversation", elem_id="agent-chat", height=550,
+                        type="messages", allow_tags=False, show_label=False,
+                        placeholder=EMPTY_CHAT,
                     )
-                    file_status = gr.Textbox(
-                        value="No files uploaded",
-                        interactive=False,
-                        show_label=False,
-                        scale=4,
-                    )
-
-                with gr.Row():
-                    msg = gr.Textbox(
-                        placeholder="Ano ang gagawin natin ngayon? (Press Enter to send)",
-                        show_label=False,
-                        scale=5,
-                        container=False,
-                    )
-                    send_btn = gr.Button("Send 🚀", variant="primary", scale=1)
-                    stop_btn = gr.Button("⏹️ Stop", variant="stop", scale=1, visible=False)
-
-                with gr.Row():
-                    clear_btn = gr.Button("🗑️ Clear", scale=0)
-                    example_dd = gr.Dropdown(
-                        choices=[
+                    with gr.Column(elem_id="composer"):
+                        with gr.Row(elem_id="compose-row"):
+                            msg = gr.Textbox(placeholder="Ask, create, or explore...", show_label=False,
+                                             lines=1, max_lines=5, scale=5, container=False,
+                                             elem_id="message-input")
+                            send_btn = gr.Button("Send", variant="primary", scale=0, elem_id="send-button")
+                            stop_btn = gr.Button("Stop", variant="stop", scale=0, visible=False, elem_id="stop-button")
+                        with gr.Row(elem_id="attachment-row"):
+                            upload_btn = gr.UploadButton("Attach files", file_count="multiple",
+                                file_types=["file"], variant="secondary", scale=0, elem_id="upload-button")
+                            file_status = gr.Textbox(value="No files uploaded", interactive=False,
+                                show_label=False, scale=4, elem_id="file-status", container=False)
+                            clear_btn = gr.Button("New chat", scale=0, elem_id="clear-button")
+                        example_dd = gr.Dropdown(choices=[
+                            "Choose a starter prompt...",
+                            "Help me outline a project plan",
                             "Gawa ka ng hello.py tapos i-edit mo yung function name",
                             "I-search mo kung paano gumawa ng FastAPI app, tapos basahin mo yung top result",
-                            "I-install mo ang rich at gawa ka ng colored output",
-                            "Gumawa ka ng simple Flask web server",
                             "Basahin mo yung uploaded na docx file at i-summarize",
-                            "Test: subukan mong i-delete ang C:\\Windows (blocked dapat)",
-                            "Test: format C: (blocked dapat)",
-                        ],
-                        label="💡 Examples",
-                        interactive=True,
-                        scale=4,
-                    )
-
-            # ---- RIGHT: settings + status ----
-            with gr.Column(scale=1):
-                gr.Markdown("### ⚙️ Settings")
-                build_providers_panel()
-                thinking_checkbox = gr.Checkbox(
-                    value=False, label="Enable Nemotron thinking (slower)",
-                    info="Off by default for faster answers. Reasoning text stays private.")
-
-                gr.Markdown("---")
-
-                # Sandbox status (updated via chat events, not auto-refresh)
-                sandbox_md = gr.Markdown(
-                    lambda: format_sandbox_status(AIAgent()),
-                )
-
-                gr.Markdown("---")
-
-                # Metrics (updated via chat events)
-                metrics_md = gr.Markdown(lambda: format_metrics(AIAgent()))
-
-                gr.Markdown("---")
-
-                # Tools list
-                gr.Markdown(
-                    f"### 🛠️ Tools ({len(TOOL_FUNCTIONS)})\n"
-                    + "\n".join(f"- `{name}`" for name in sorted(TOOL_FUNCTIONS.keys()))
-                )
-
-                gr.Markdown("---")
-
-                gr.Markdown(
-                    """
-                    ### 🚫 Blocked by default
-                    - `format`, `shutdown`, `diskpart`
-                    - Deleting system directories
-                    - Registry modifications
-                    - Pip injection vectors
-                    - Path traversal attacks
-                    - Credential file reads
-
-                    ### 📦 Sandbox info
-                    - All code runs in a **temporary sandbox**
-                    - Installed packages are session-only
-                    - Host machine is **never modified**
-                    - Install Docker for stronger isolation
-                    """
-                )
+                        ], show_label=False, label="Try a prompt", value="Choose a starter prompt...",
+                           interactive=True, elem_id="examples", filterable=False)
+            with gr.Tab("Settings", id="settings"):
+                with gr.Column(elem_id="settings-panel"):
+                    gr.Markdown("## Make it yours\nChoose your providers and how your assistant thinks. "
+                                "Changes apply to your next message.")
+                    thinking_checkbox = gr.Checkbox(value=False, label="Enable Nemotron thinking",
+                        info="Slower, more considered answers. Off by default. Reasoning text stays private.")
+                    build_providers_panel()
+            with gr.Tab("Session", id="session"):
+                with gr.Column(elem_id="session-panel"):
+                    gr.Markdown("## Behind this conversation\nUsage, tools and sandbox details for this session.")
+                    sandbox_md = gr.Markdown(lambda: format_sandbox_status(AIAgent()))
+                    with gr.Accordion("Usage & metrics", open=True):
+                        metrics_md = gr.Markdown(lambda: format_metrics(AIAgent()))
+                    with gr.Accordion(f"Available tools ({len(TOOL_FUNCTIONS)})", open=False):
+                        gr.Markdown("\n".join(f"- `{name}`" for name in sorted(TOOL_FUNCTIONS)))
+                    with gr.Accordion("Safety & isolation", open=False):
+                        gr.Markdown("**Blocked by default:** destructive system commands, system-directory "
+                                    "deletion, registry changes, pip injection, path traversal and credential reads.\n\n"
+                                    "**Temporary sandbox:** installed packages are session-only. A venv isolates "
+                                    "packages, not files or secrets; commands can modify this server. "
+                                    "Docker provides stronger isolation.\n\n" + approval_warning())
 
         # ============================================================
         # EVENT WIRING
@@ -595,7 +493,7 @@ def build_app():
             text = approval_gate.pending(agent.session_id)
             if not text:
                 return gr.update(visible=False), gr.update(visible=False)
-            return (gr.update(value=f"### ⏸️ Approval needed\n```\n{text}\n```", visible=True),
+            return (gr.update(value=f"### Approval needed\n```\n{text}\n```", visible=True),
                     gr.update(visible=True))
 
         def answer_approval(agent: AIAgent, approved: bool):
@@ -626,7 +524,7 @@ def build_app():
 
         # Example dropdown -> message
         example_dd.change(
-            lambda choice: choice or "",
+            lambda choice: "" if choice == "Choose a starter prompt..." else choice or "",
             inputs=[example_dd],
             outputs=[msg],
         )
@@ -646,13 +544,13 @@ if __name__ == "__main__":
     logging.getLogger("uvicorn.error").setLevel(logging.CRITICAL)
 
     print("=" * 50)
-    print("  🤖 AI Agent - Sandboxed Local Assistant")
-    print("  ⚡ STREAMING ENABLED")
-    print("  📦 TEMPORARY SANDBOX")
+    print("   AI Agent - Sandboxed Local Assistant")
+    print("   STREAMING ENABLED")
+    print("   TEMPORARY SANDBOX")
     print("=" * 50)
-    print(f"  📂 Workspace: {WORKSPACE_DIR}")
-    print(f"  🛡️  Safety: ACTIVE")
-    print("  🌐 Listener and authentication configured by environment")
+    print(f"   Workspace: {WORKSPACE_DIR}")
+    print(f"    Safety: ACTIVE")
+    print("   Listener and authentication configured by environment")
     print("=" * 50)
 
     settings = launch_settings()  # validate before constructing any app/session
