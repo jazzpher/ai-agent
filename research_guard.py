@@ -11,6 +11,7 @@ from urllib.parse import quote_plus, urlparse
 
 import httpx
 
+RESEARCH_TOOLS = ("web_search", "fetch_page", "image_search")
 MAX_SEARCHES = 6
 MAX_FETCHES = 10
 MAX_EMPTY_SEARCHES = 3
@@ -107,6 +108,7 @@ class ResearchLedger:
         self.fetches = 0
         self.empty_streak = 0
         self.refusals = 0
+        self.steers = 0
         self.pages = {}      # normalized url -> (url, text) for pages the model read
         self.snippets = {}   # normalized url -> (url, text) from search results
 
@@ -129,6 +131,14 @@ class ResearchLedger:
             if self.searches >= MAX_SEARCHES:
                 self.refusals += 1
                 return f"Search limit ({MAX_SEARCHES}) reached. " + done
+            if self.searches >= 1 and self.steers < 4:
+                q = str((args or {}).get("query", "")).lower()
+                todo = [u for name, urls in OFFICIAL_PAGES.items() if name in q
+                        for u in urls if _norm_url(u) not in self.pages]
+                if todo:
+                    self.steers += 1
+                    return ("Do not search for this. Fetch the official page directly with fetch_page "
+                            "(one search costs ~13s, a fetch ~1s): " + ", ".join(todo[:3]))
             if self.empty_streak >= MAX_EMPTY_SEARCHES:
                 self.refusals += 1
                 return ("Search keeps returning nothing useful. Stop searching; fetch the official pages "
@@ -258,3 +268,13 @@ def footer(issues: list) -> str:
     body = "\n".join(f"- {i}" for i in issues[:10])
     return ("\n\n⚠️ **Hindi na-verify sa mga nakuhang source (huwag munang pagkatiwalaan):**\n"
             + body + "\n")
+
+
+def looks_like_tool_call(text: str) -> bool:
+    """True when a reply is a tool call written as text (invisible to the user)."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if re.search(r"<\s*/?\s*tool_call|<\|?python_tag|\bfunction_call\b", t, re.I):
+        return len(re.sub(r"<[^>]*>|\{.*?\}", "", t, flags=re.S).strip()) < 200
+    return bool(re.fullmatch(r"\s*(?:fetch_page|web_search)\s*[\(\{].*", t, re.S))
