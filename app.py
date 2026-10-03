@@ -76,7 +76,7 @@ def format_metrics(agent) -> str:
         f"| Session | `{m['session_id']}` |\n"
         f"| Model | `{m['model']}` |\n"
         f"| Elapsed | {m['elapsed_seconds']}s |\n"
-        f"| Iterations | {m['iterations']} / {20} |\n"
+        f"| Iterations | {m['iterations']} |\n"
         f"| Tool calls | {m['tool_calls']} |\n"
         f"| Errors | {m['errors']} |\n"
         f"| Prompt tokens | {m['prompt_tokens']:,} |\n"
