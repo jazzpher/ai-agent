@@ -275,7 +275,23 @@ def list_workspace_files(agent=None):
 
 def refresh_panels(agent):
     """Refresh the download list and the Session sandbox status after a turn."""
-    return list_workspace_files(agent), format_sandbox_status(agent)
+    try:
+        files = list_workspace_files(agent)
+    except Exception:
+        files = None
+    try:
+        status = format_sandbox_status(agent)
+    except Exception:
+        status = gr.update()
+    return files, status
+
+
+def load_files_only(request: gr.Request = None):
+    """Page-load refresh: only needs the workspace files, never the agent state."""
+    try:
+        return list_workspace_files()
+    except Exception:
+        return None
 
 
 def start_chat(message, history, file_paths, agent: AIAgent):
@@ -587,7 +603,7 @@ def build_app():
                show_progress="hidden")
         # Also usable after a dropped connection ("Reconnected"): reload the panels on demand.
         refresh_files_btn.click(refresh_panels, inputs=[agent_state], outputs=[files_box, sandbox_md])
-        app.load(refresh_panels, inputs=[agent_state], outputs=[files_box, sandbox_md])
+        app.load(load_files_only, inputs=None, outputs=[files_box])
 
         # Approval banner: poll for a pending request from the running agent
         def poll_approval(agent: AIAgent):

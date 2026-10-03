@@ -184,6 +184,11 @@ def _changed_files(before) -> list:
     return sorted(p for p, meta in now.items() if before.get(p) != meta)[:20]
 
 
+def _today_text():
+    from letters import today_text
+    return today_text()
+
+
 class AIAgent:
     def __init__(self, api_key: str = None, model: str = None, base_url: str = None):
         self.api_key = api_key or NVIDIA_API_KEY
@@ -248,6 +253,7 @@ class AIAgent:
         return f"""You are an expert AI assistant with sandboxed tools on the user's computer. You are deliberate, careful, and you verify your work.
 
 For letters, memos and official-style documents (.docx), call the create_letter_docx tool. Do not hand-write python-docx code for them.
+Today's date (Asia/Manila) is {_today_text()}. Use it for any date the user did not give; never invent a date.
 
 # 🎯 CORE METHOD — ALWAYS FOLLOW
 
