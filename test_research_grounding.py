@@ -150,3 +150,15 @@ def test_pseudo_call_reply_is_retried_and_tools_stay_for_other_work():
     names = [t['function']['name'] for t in streams[0]['tools']]
     assert 'web_search' not in names and 'fetch_page' not in names and names
     patch.stopall()
+
+
+def test_fetch_order_official_pages_first():
+    led = rg.ResearchLedger()
+    led.set_topic('compare Render, Railway and Netlify')
+    msg = led.gate('fetch_page', {'url': 'https://kuberns.com/blogs/railway-free-tier/'})
+    assert msg and 'render.com/pricing' in msg
+    assert led.gate('fetch_page', {'url': 'https://docs.railway.com/deployments/serverless'}) is None
+    for u in ('https://render.com/pricing', 'https://railway.com/pricing', 'https://www.netlify.com/pricing/'):
+        led.record('fetch_page', {'url': u}, PAGE)
+    assert led.gate('fetch_page', {'url': 'https://kuberns.com/blog'}) is None
+    assert rg.MAX_FETCHES >= 14
