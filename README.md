@@ -278,18 +278,36 @@ The NVIDIA preset now defaults to `nvidia/nemotron-3-ultra-550b-a55b`.
 If an existing NVIDIA slot still uses the old model, edit that slot in Settings.
 Other provider presets are unchanged.
 
-All completion requests (chat, planning, review, and connection test) use a
-180-second request timeout with SDK retries disabled. Connection errors,
-timeouts, 429, and 500/502/503/504 responses get up to seven attempts, with
-2/4/8/16/32/13-second waits (75 seconds total). Chat falls back to the next
-configured provider only after those attempts are exhausted. Chat requests
-share the existing 600-second turn budget; it is a best-effort budget because
-an in-flight synchronous request cannot be interrupted immediately. Cancellation
-is checked during backoff, but an in-flight request may take up to its timeout.
-Authentication and other non-transient errors are not retried. A stream that has
-already started is never replayed automatically, avoiding duplicated text or
-tool calls. Test connection can therefore take several minutes during an outage.
-No API key is included in this change.
+Completion requests (chat, planning, review, and connection test) use a
+30-second request timeout with SDK retries disabled. Connection errors,
+timeouts, 429, and 500/502/503/504 responses get up to three attempts, with
+1/2-second backoffs. Chat falls back to the next configured provider only after
+those attempts are exhausted. Chat requests share a 120-second turn budget.
+Read-only metrics and sandbox-status views no longer create sandboxes or install
+packages. A new sandbox starts only when a tool needs it. This removes a slow,
+silent pre-request setup even for a simple greeting. The completed chat history
+is retained when the Send/Stop controls reset.
+
+The UI keeps a waiting/retrying indicator visible during provider I/O and exits
+on cancellation or the turn deadline. A blocked background HTTP read may still
+finish within its request timeout; its result is discarded and its stream closed.
+Tool execution and synchronous planning/review are still best-effort bounded,
+not a guarantee that every kind of task stops exactly at 120 seconds.
+Authentication and other non-transient errors are not retried. A partial stream
+is never replayed automatically, avoiding duplicated text or tool calls.
+
+Nemotron uses `chat_template_kwargs.enable_thinking=false` by default. The
+**Enable Nemotron thinking (slower)** checkbox enables it for the current session.
+Thinking mode also sets `force_nonempty_content=true` as NVIDIA documents for
+reasoning with tool calls. Raw reasoning is never shown in chat. A reasoning-only stream keeps a status
+visible; a completed stream without answer text or tool calls shows a useful
+error instead of silently recording an empty answer. Other models keep their
+existing reasoning controls.
+
+Request start/ready/error/retry events go to stdout for hosting logs. They contain
+only attempt numbers, timeouts, status codes, and error type names, never keys,
+URLs, prompts, reasoning, model outputs, or raw exception text. Existing private
+JSONL session logs remain separate. No API key is included in this change.
 
 ## Harness safety and smarts
 
