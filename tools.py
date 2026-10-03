@@ -13,7 +13,7 @@ import httpx
 import trafilatura
 
 try:
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
     HAS_DDG = True
 except ImportError:
     HAS_DDG = False
@@ -526,21 +526,28 @@ def web_search(query: str, max_results: int = 5, session_id: str = None) -> dict
         return {
             "status": "error",
             "output": (
-                "duckduckgo-search is not installed. Run:\n"
-                "  pip install duckduckgo-search==8.1.1\n"
+                "ddgs is not installed. Run:\n"
+                "  pip install ddgs==9.16.0\n"
                 "and restart the agent."
             ),
         }
     try:
         results = []
-        with DDGS() as ddgs:
-            for r in ddgs.text(query, max_results=max_results):
+        # Preserve the user's exact query. Maintained DDGS supports multiple
+        # engines; the old package forced Bing and silently lost relevance.
+        with DDGS(timeout=12) as ddgs:
+            for r in ddgs.text(query, max_results=min(max(max_results, 1), 10), backend="auto"):
+                terms = set(re.findall(r"[a-z0-9]{3,}", query.lower())) - {
+                    "the", "and", "for", "with", "2026", "site", "current", "latest"}
+                text = " ".join(str(r.get(k, "")) for k in ("title", "body", "href", "url")).lower()
+                if terms and not any(t in text for t in terms):
+                    continue
                 title = r.get("title", "")
                 href = r.get("href") or r.get("url", "")
                 body = r.get("body", "")
                 results.append(f"### {title}\n{body}\nURL: {href}\n")
         if not results:
-            results.append("No results. Try a different query.")
+            return {"status": "error", "output": "No relevant results. Try a shorter query or fetch known official pages directly. Do not treat this as research evidence."}
         return {"status": "success", "output": _truncate("\n".join(results), max_chars=6000)}
     except Exception as e:
         return {"status": "error", "output": f"Search error: {e}"}
@@ -728,7 +735,7 @@ def image_search(query: str, max_results: int = 5, session_id: str = None) -> di
     if not HAS_DDG:
         return {
             "status": "error",
-            "output": "duckduckgo-search is not installed. Run: pip install duckduckgo-search",
+            "output": "ddgs is not installed. Run: pip install duckduckgo-search",
         }
     try:
         results = []
@@ -1248,4 +1255,4 @@ TOOL_FUNCTIONS = {
     "process_image": process_image,
     "remove_background": remove_background,
     "recall_step": recall_step,
-    }
+}
