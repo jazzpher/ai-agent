@@ -971,8 +971,8 @@ RULES
                 max_tokens=DEFAULT_MAX_TOKENS,
                 stream=True,
                 top_p=0.95,
-                frequency_penalty=0.1,
-                presence_penalty=0.1,
+                frequency_penalty=0.0,
+                presence_penalty=0.0,
             )
             if self._thinking_body():
                 kwargs["extra_body"] = self._thinking_body()
