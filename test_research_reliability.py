@@ -39,7 +39,7 @@ def test_research_requires_search_first():
     with patch.dict(agent_mod.TOOL_FUNCTIONS, {'web_search': lambda **kw: {'status': 'success', 'output': 'No results'}}):
         run(a, 'research Lucena job market')
     calls = [c for c in client.calls if c.get('stream')]
-    assert calls[0]['tool_choice']['function']['name'] == 'web_search'
+    assert calls[0]['tool_choice']['function']['name'] == 'job_search'
     assert calls[1]['tool_choice'] == 'auto'
     patch.stopall()
 
