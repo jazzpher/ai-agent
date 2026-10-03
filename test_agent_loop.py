@@ -335,6 +335,19 @@ class HeartbeatTest(unittest.TestCase):
         self.assertIn("done", out)
 
 
+class SandboxVenvPackagesTest(unittest.TestCase):
+    def test_installs_what_the_venv_lacks_even_if_the_app_has_it(self):
+        """App running inside its own venv: app can import Pillow, sandbox venv cannot."""
+        import sandbox_session as ss
+        calls = []
+        with patch.object(ss.subprocess, "run", side_effect=lambda cmd, **k: calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr="")), \
+                patch.object(ss, "missing_core_packages", return_value=[]), \
+                patch.object(ss.SessionSandbox, "_link_parent_site_packages"), \
+                patch.object(ss.SessionSandbox, "_missing_in_venv", return_value=["Pillow"]):
+            ss.SessionSandbox("t2", force_mode="venv")
+        self.assertTrue(any("pip" in c and "Pillow" in c for c in calls))
+
+
 class SandboxSetupTest(unittest.TestCase):
     def test_missing_core_packages_only_lists_unimportable(self):
         import sandbox_session as ss
@@ -345,7 +358,8 @@ class SandboxSetupTest(unittest.TestCase):
         import sandbox_session as ss
         calls = []
         with patch.object(ss.subprocess, "run", side_effect=lambda cmd, **k: calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr="")), \
-                patch.object(ss, "missing_core_packages", return_value=[]):
+                patch.object(ss.SessionSandbox, "_link_parent_site_packages"), \
+                patch.object(ss.SessionSandbox, "_missing_in_venv", return_value=[]):
             ss.SessionSandbox("t1", force_mode="venv")
         self.assertEqual(len(calls), 1)
         self.assertIn("--system-site-packages", calls[0])

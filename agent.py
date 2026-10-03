@@ -136,7 +136,11 @@ def _summarize_result(result: dict) -> str:
     if status == "blocked":
         return f"blocked — {output.splitlines()[0] if output else ''}"[:_TOOL_RESULT_DISPLAY_MAX]
     if status == "error":
-        first = output.splitlines()[0] if output else "error"
+        lines = [l.strip() for l in output.splitlines() if l.strip()] if output else []
+        # run_python output starts with a bare "Errors:" header; the useful line is
+        # the last one of the traceback (the exception message).
+        useful = [l for l in lines if l.rstrip(":") not in ("Errors", "Output")]
+        first = (useful[-1] if useful else lines[0] if lines else "error")
         return f"error — {first}"[:_TOOL_RESULT_DISPLAY_MAX]
     # success
     if not output:
@@ -1113,7 +1117,14 @@ RULES
                     _verify_rounds += 1
                     full_response += "\n\n🔎 **Checking my answer…**\n"
                     yield full_response
-                    verdict = self._verify_final(client, self._current_goal, final_text)
+                    verdict = ""
+                    for kind, val in self._in_background(
+                            lambda: self._verify_final(client, self._current_goal, final_text),
+                            "Checking my answer"):
+                        if kind == "beat":
+                            yield full_response + val
+                        else:
+                            verdict = val
                     if verdict.splitlines()[0].strip().upper() == "FAIL":
                         body = "\n".join(verdict.splitlines()[1:]).strip()
                         full_response += f"🛠️ May kulang: {body[:300]}\n\n"
@@ -1325,9 +1336,15 @@ RULES
                 yield full_response
 
                 _eval_count += 1
-                evaluation = self._evaluate_action(
-                    client, self._current_goal, action_summary, result_text
-                )
+                evaluation = ""
+                for kind, val in self._in_background(
+                        lambda: self._evaluate_action(
+                            client, self._current_goal, action_summary, result_text),
+                        "Self-check"):
+                    if kind == "beat":
+                        yield full_response + val
+                    else:
+                        evaluation = val
                 first_line = evaluation.splitlines()[0].strip() if evaluation else "KEEP"
 
                 if first_line == "KEEP":

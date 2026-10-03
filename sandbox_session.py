@@ -13,6 +13,7 @@ Both modes ensure:
 
 import os
 import sys
+import json
 import subprocess
 import shutil
 import time
@@ -210,13 +211,51 @@ class SessionSandbox:
             self._python_path = os.path.join(self._venv_path, "bin", "python")
             self._pip_path = os.path.join(self._venv_path, "bin", "pip")
 
-        # Reuse packages already installed for the app (--system-site-packages) and
-        # only install what is missing. No pip upgrade: on small hosts (Render free,
-        # 512MB) a full reinstall blocked the first tool call for minutes.
-        missing = missing_core_packages()
+        # --system-site-packages only exposes the BASE interpreter's packages. When the
+        # app itself runs inside a venv (Render installs requirements into one), the
+        # app's packages (Pillow, python-docx, pandas...) are NOT visible in this venv.
+        # Link them in with a .pth file, then install only what is truly missing,
+        # checked with the venv's own interpreter (not the app's).
+        self._link_parent_site_packages()
+        missing = self._missing_in_venv()
         if missing:
             self._venv_pip_install(" ".join(missing), timeout=300)
 
+    def _link_parent_site_packages(self):
+        """Make the app's installed packages importable inside the sandbox venv."""
+        try:
+            if sys.prefix == getattr(sys, "base_prefix", sys.prefix):
+                return  # app is not in a venv; --system-site-packages is enough
+            import site
+            parent = [p for p in site.getsitepackages() if os.path.isdir(p)]
+            r = subprocess.run(
+                [self._python_path, "-c",
+                 "import sysconfig;print(sysconfig.get_paths()['purelib'])"],
+                capture_output=True, text=True, timeout=30,
+            )
+            purelib = r.stdout.strip()
+            if parent and purelib and os.path.isdir(purelib):
+                with open(os.path.join(purelib, "_app_site_packages.pth"), "w") as f:
+                    f.write("\n".join(parent) + "\n")
+        except Exception:
+            pass  # fall back to installing whatever is missing
+
+    def _missing_in_venv(self) -> list[str]:
+        """Core packages the venv's own interpreter cannot import."""
+        names = {pkg: _IMPORT_NAMES.get(pkg.lower(), pkg.replace("-", "_")) for pkg in CORE_PACKAGES}
+        code = (
+            "import importlib.util,sys,json;"
+            "print(json.dumps([p for p,m in json.loads(sys.argv[1]).items() "
+            "if importlib.util.find_spec(m) is None]))"
+        )
+        try:
+            r = subprocess.run(
+                [self._python_path, "-c", code, json.dumps(names)],
+                capture_output=True, text=True, timeout=60,
+            )
+            return json.loads(r.stdout.strip().splitlines()[-1])
+        except Exception:
+            return missing_core_packages()
 
     def _venv_pip_install(self, packages: str, timeout: int = 180) -> dict:
         """Install packages in the ephemeral venv."""
