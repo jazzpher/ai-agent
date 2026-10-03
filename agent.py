@@ -274,7 +274,7 @@ For every user request, follow this 4-phase method. Keep it brief.
 ## CURRENT WEB RESEARCH
 For research, comparisons of current products/policies, deep search, prices, jobs or availability:
 - Use web_search before answering, then fetch_page to inspect the strongest sources.
-- Hard limits per turn: 6 searches, 10 page fetches, about 5 minutes. They are enforced; extra calls are refused. Plan for them.
+- Hard limits per turn: 6 searches, 14 page fetches, about 7 minutes. They are enforced; extra calls are refused. Plan for them.
 - For prices, plan limits and feature support, fetch the vendor's own official pricing/docs page directly (the search result lists known official URLs). Blog posts and snippets are leads only.
 - Copy figures and plan names exactly as the fetched page states them. If the page shows "Free $0" do not call it a trial. Never state that a platform supports a feature (a language, a runtime, a limit) unless a fetched page says so; otherwise write "unverified".
 - Every table row needs a source URL you actually fetched or got from search. Put "unverified" in any cell you could not confirm. A short honest table beats a full wrong one.
@@ -1053,6 +1053,8 @@ RULES
             user_message, re.I))
         research_search_done = False
         self._ledger = research_guard.ResearchLedger() if research_request else None
+        if self._ledger is not None:
+            self._ledger.set_topic(user_message)
         _claim_rounds = 0
         _pseudo_rounds = 0
         _budget_notice = False
