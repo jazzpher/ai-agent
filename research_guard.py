@@ -13,9 +13,9 @@ import httpx
 
 RESEARCH_TOOLS = ("web_search", "fetch_page", "image_search")
 MAX_SEARCHES = 6
-MAX_FETCHES = 10
+MAX_FETCHES = 14
 MAX_EMPTY_SEARCHES = 3
-MAX_RESEARCH_SECONDS = 330
+MAX_RESEARCH_SECONDS = 420
 
 OFFICIAL_PAGES = {
     "render": ["https://render.com/pricing", "https://render.com/docs/free"],
@@ -109,8 +109,17 @@ class ResearchLedger:
         self.empty_streak = 0
         self.refusals = 0
         self.steers = 0
+        self.topic = ""
         self.pages = {}      # normalized url -> (url, text) for pages the model read
         self.snippets = {}   # normalized url -> (url, text) from search results
+
+    def set_topic(self, text: str):
+        self.topic = (text or "").lower()
+
+    def pending_official(self) -> list:
+        """Official pages for platforms the user named that were not fetched yet."""
+        return [u for name, urls in OFFICIAL_PAGES.items() if name in self.topic
+                for u in urls[:1] if _norm_url(u) not in self.pages]
 
     # ---- budgets -------------------------------------------------------
     def exhausted(self) -> bool:
@@ -147,6 +156,14 @@ class ResearchLedger:
             url = str((args or {}).get("url", ""))
             if _norm_url(url) in self.pages:
                 return None  # cached, free
+            pending = self.pending_official()
+            host = urlparse(url).netloc.lower().removeprefix("www.")
+            official_hosts = {urlparse(u).netloc.lower().removeprefix("www.")
+                              for us in OFFICIAL_PAGES.values() for u in us}
+            if pending and self.steers < 8 and not any(host == h or host.endswith("." + h) for h in official_hosts):
+                self.steers += 1
+                return ("Fetch the official pages for every platform the user named before any other "
+                        "site. Still to fetch: " + ", ".join(pending[:5]))
             if self.fetches >= MAX_FETCHES:
                 self.refusals += 1
                 return f"Fetch limit ({MAX_FETCHES}) reached. " + done
