@@ -1074,14 +1074,18 @@ RULES
             finish_reason = None
             stream_error = None
 
+            _last_ui = 0.0
             try:
                 reasoning_seen = False
                 for kind, chunk in with_status(lambda: stream,
                         deadline=self._completion_deadline,
                         cancelled=lambda: self.cancel_requested):
                     if kind == "wait":
-                        status = "Model is thinking; waiting for answer…" if reasoning_seen else "Waiting for the model…"
-                        yield full_response.replace(thinking_msg, f"\n\n⏳ {status}\n\n")
+                        # The 0.15 CPU free instance chokes on a UI update every second.
+                        if time.monotonic() - _last_ui >= 4.0:
+                            _last_ui = time.monotonic()
+                            status = "Model is thinking; waiting for answer…" if reasoning_seen else "Waiting for the model…"
+                            yield full_response.replace(thinking_msg, f"\n\n⏳ {status}\n\n")
                         continue
                     if self.cancel_requested:
                         full_response += "\n\n⏹️ **Operation cancelled by user.**"
@@ -1096,12 +1100,16 @@ RULES
                     if delta and getattr(delta, "reasoning_content", None) and not reasoning_seen:
                         reasoning_seen = True
                         self._log("reasoning_started")
+                        _last_ui = time.monotonic()
                         yield full_response.replace(thinking_msg, "\n\n⏳ Model is thinking; waiting for answer…\n\n")
                     if delta and delta.content:
                         full_response = full_response.replace(thinking_msg, "\n\n---\n\n")
                         content_chunks.append(delta.content)
                         full_response += delta.content
-                        yield full_response
+                        # Throttle UI pushes: one per token floods Gradio on the free instance.
+                        if time.monotonic() - _last_ui >= 0.3:
+                            _last_ui = time.monotonic()
+                            yield full_response
 
                     if delta and delta.tool_calls:
                         full_response = full_response.replace(thinking_msg, "\n\n---\n\n")
@@ -1140,6 +1148,8 @@ RULES
                 yield full_response
                 return
 
+            if content_chunks:
+                yield full_response  # flush text withheld by the throttle
             completion_tokens = sum(_count_tokens(c) for c in content_chunks)
 
             if stream_error == "cancelled":
