@@ -51,7 +51,7 @@ from context_manager import ContextManager
 from vision import image_data_uri, strip_old_images
 from approvals import gate as approval_gate, needs_approval
 
-MAX_VERIFY_ROUNDS = 2
+MAX_VERIFY_ROUNDS = 1
 
 
 def verify_enabled() -> bool:
@@ -155,6 +155,34 @@ def _summarize_result(result: dict) -> str:
 # ===========================================================
 # AGENT
 # ===========================================================
+
+def _workspace_snapshot() -> dict:
+    snap = {}
+    try:
+        for root, dirs, names in os.walk(WORKSPACE_DIR):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
+            for n in names:
+                if n.startswith("."):
+                    continue
+                path = os.path.join(root, n)
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                snap[os.path.relpath(path, WORKSPACE_DIR)] = (st.st_mtime_ns, st.st_size)
+                if len(snap) > 500:
+                    return snap
+    except OSError:
+        pass
+    return snap
+
+
+def _changed_files(before) -> list:
+    if before is None:
+        return []
+    now = _workspace_snapshot()
+    return sorted(p for p, meta in now.items() if before.get(p) != meta)[:20]
+
 
 class AIAgent:
     def __init__(self, api_key: str = None, model: str = None, base_url: str = None):
@@ -650,6 +678,7 @@ RULES
 - PASS unless there is a real, specific problem. Do not nitpick style or wording.
 - A claim like "created X" or "tests pass" needs matching evidence in the tool results.
 - If a tool result shows an error or a denied/blocked command that the answer ignores, FAIL.
+- Tool evidence includes the start of the code that ran and the files created this turn. If a tool succeeded and the file the user asked for is listed as created, do NOT FAIL because you cannot see all of the code.
 - Match the user's language."""
 
     def _verify_final(self, client, goal: str, answer: str) -> str:
@@ -657,10 +686,13 @@ RULES
         evidence = "\n".join(
             f"- {name} [{status}]: {out}" for name, status, out in self._turn_evidence[-8:]
         ) or "(no tool calls)"
+        files = _changed_files(getattr(self, "_files_before", None))
+        if files:
+            evidence += "\n- Files created or changed this turn: " + ", ".join(files)
         messages = [
             {"role": "system", "content": self._VERIFY_SYSTEM},
             {"role": "user", "content": (
-                f"**User goal:** {goal}\n\n**Tool evidence (latest):**\n{evidence[:3000]}\n\n"
+                f"**User goal:** {goal}\n\n**Tool evidence (latest):**\n{evidence[:4500]}\n\n"
                 f"**Final answer:**\n{answer[:2000]}"
             )},
         ]
@@ -934,6 +966,7 @@ RULES
         _eval_count = 0
         _MAX_EVALS_PER_TURN = 3
         self._turn_evidence = []
+        self._files_before = _workspace_snapshot()
         _verify_rounds = 0
         _stream_retries = 0
 
@@ -1152,6 +1185,11 @@ RULES
                         continue
                     full_response += "✅ Na-check, ok.\n"
                     yield full_response
+                _made = _changed_files(getattr(self, "_files_before", None))
+                if _made:
+                    full_response += ("\n\n📎 **Files ready:** " + ", ".join(f"`{n}`" for n in _made)
+                                      + " - download them from **Files in workspace** below the chat.\n")
+                    yield full_response
                 self._log("turn_final", finish_reason=finish_reason, completion_tokens=completion_tokens)
                 return
 
@@ -1263,10 +1301,15 @@ RULES
                 else:
                     badge = "✅"
 
+                _arg_head = ""
+                if isinstance(args, dict):
+                    _code = args.get("code") or args.get("command") or ""
+                    if _code:
+                        _arg_head = f" | input starts: {str(_code)[:500]!r}"
                 self._turn_evidence.append((
                     tool_name,
                     result.get("status", "unknown") if isinstance(result, dict) else "unknown",
-                    str(result.get("output", "") if isinstance(result, dict) else result)[:300],
+                    str(result.get("output", "") if isinstance(result, dict) else result)[:800] + _arg_head,
                 ))
                 full_response += f"{badge} `{tool_name}` — {elapsed:.2f}s — {summary}\n"
                 yield full_response
