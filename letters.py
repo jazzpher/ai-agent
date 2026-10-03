@@ -1,7 +1,7 @@
 """Well-formed one-page letter .docx builder, used by the create_letter_docx tool.
 
 Small models write fragile python-docx code. This builds the layout for them:
-aligned letterhead with a circular seal (generated or uploaded), real date,
+aligned letterhead with a detailed seal (generated fictional seal or uploaded), real date,
 recipient block, subject, body paragraphs, closing and signatory.
 """
 import os
@@ -44,26 +44,93 @@ def resolve_date_text(date_text=None, tz="Asia/Manila"):
     return text
 
 
-def make_seal_png(path: str, lines=("SAMPLE", "SEAL"), size: int = 600) -> str:
-    """Draw a simple circular placeholder seal (double ring + text)."""
+def _arc_text(img, text, cx, cy, radius, font, fill, start_deg, end_deg, bottom=False):
+    """Place text along an arc; letters upright relative to the circle."""
+    import math
+    from PIL import Image, ImageDraw
+    n = len(text)
+    if n == 0:
+        return
+    for i, ch in enumerate(text):
+        t = i / max(n - 1, 1)
+        ang = start_deg + (end_deg - start_deg) * t  # degrees, 0=top, clockwise
+        if bottom:
+            ang = 180 - ang  # left-to-right along the bottom
+        a = math.radians(ang)
+        x, y = cx + radius * math.sin(a), cy - radius * math.cos(a)
+        bb = font.getbbox(ch)
+        w, h = bb[2] - bb[0] + 20, bb[3] - bb[1] + 40
+        tile = Image.new("RGBA", (w * 2, h * 2), (0, 0, 0, 0))
+        ImageDraw.Draw(tile).text((w, h), ch, font=font, fill=fill, anchor="mm")
+        rot = tile.rotate(-(ang - 180 if bottom else ang), resample=Image.BICUBIC, expand=True)
+        img.alpha_composite(rot, (int(x - rot.width / 2), int(y - rot.height / 2)))
+
+
+def make_seal_png(path: str, lines=("SAMPLE", "SEAL"), size: int = 1600) -> str:
+    """Draw a detailed fictional government-style seal (no real seal is imitated).
+
+    Rope-style outer ring, text on an arc, laurel branches, mountain/sun/sea
+    emblem and a star. Rendered 2x and downsampled for smooth edges."""
+    import math
     from PIL import Image, ImageDraw, ImageFont
-    img = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+    S = size * 2
+    c = S // 2
+    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    col = (31, 58, 107, 255)
-    d.ellipse((6, 6, size - 6, size - 6), outline=col, width=12)
-    d.ellipse((50, 50, size - 50, size - 50), outline=col, width=5)
+    navy, gold, cream = (24, 46, 96, 255), (184, 142, 48, 255), (250, 245, 230, 255)
+    d.ellipse((4, 4, S - 4, S - 4), fill=gold)
+    d.ellipse((S * 0.025, S * 0.025, S * 0.975, S * 0.975), fill=navy)
+    # rope / beaded edge
+    for k in range(120):
+        a = 2 * math.pi * k / 120
+        r = S * 0.485
+        x, y = c + r * math.cos(a), c + r * math.sin(a)
+        d.ellipse((x - S * 0.008, y - S * 0.008, x + S * 0.008, y + S * 0.008), fill=gold)
+    d.ellipse((S * 0.06, S * 0.06, S * 0.94, S * 0.94), outline=gold, width=int(S * 0.006))
+    d.ellipse((S * 0.255, S * 0.255, S * 0.745, S * 0.745), fill=cream, outline=gold, width=int(S * 0.012))
+    d.ellipse((S * 0.28, S * 0.28, S * 0.72, S * 0.72), outline=navy, width=int(S * 0.004))
+    words = [str(x).upper() for x in lines if str(x).strip()][:3] or ["SAMPLE"]
+    top = " ".join(words) if len(words) > 1 else words[0]
+    top_text = f"* {top} *"
     try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", size // 7)
+        f1 = ImageFont.truetype("DejaVuSerif-Bold.ttf", int(S * 0.058))
+        f2 = ImageFont.truetype("DejaVuSerif-Bold.ttf", int(S * 0.042))
     except OSError:
-        font = ImageFont.load_default()
-    lines = [str(x) for x in lines if str(x).strip()][:3] or ["SAMPLE"]
-    total = len(lines) * (size // 6)
-    y = (size - total) // 2
-    for line in lines:
-        w = d.textlength(line, font=font)
-        d.text(((size - w) / 2, y), line, fill=col, font=font)
-        y += size // 6
-    img.save(path)
+        f1 = f2 = ImageFont.load_default()
+    span = min(100, 4.2 * len(top_text))
+    _arc_text(img, top_text, c, c, S * 0.365, f1, cream, -span, span)
+    # laurel branches hugging the emblem
+    for side in (-1, 1):
+        for k in range(9):
+            ang = 180 + side * (14 + k * 10)
+            r = S * 0.228
+            a = math.radians(ang)
+            x, y = c + r * math.sin(a), c - r * math.cos(a)
+            leaf = Image.new("RGBA", (int(S * 0.05), int(S * 0.02)), (0, 0, 0, 0))
+            ImageDraw.Draw(leaf).ellipse((0, 0, leaf.width - 1, leaf.height - 1), fill=(60, 110, 70, 255))
+            rot = leaf.rotate(ang + side * 25, expand=True, resample=Image.BICUBIC)
+            img.alpha_composite(rot, (int(x - rot.width / 2), int(y - rot.height / 2)))
+    # emblem: sky, sun rays, mountains, sea
+    em = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    e = ImageDraw.Draw(em)
+    e.ellipse((S * 0.30, S * 0.30, S * 0.70, S * 0.70), fill=(214, 232, 245, 255))
+    sx, sy = c, c + S * 0.02
+    for k in range(16):
+        a = math.pi * (k / 15)
+        e.line((sx, sy, sx - math.cos(a) * S * 0.2, sy - math.sin(a) * S * 0.2), fill=(240, 196, 80, 255), width=int(S * 0.006))
+    e.ellipse((sx - S * 0.05, sy - S * 0.05, sx + S * 0.05, sy + S * 0.05), fill=(232, 168, 40, 255))
+    e.polygon([(c - S * 0.21, c + S * 0.12), (c - S * 0.09, c - S * 0.04), (c + S * 0.0, c + S * 0.08),
+               (c + S * 0.10, c - S * 0.08), (c + S * 0.21, c + S * 0.12)], fill=(70, 100, 82, 255))
+    e.polygon([(c - S * 0.21, c + S * 0.12), (c - S * 0.09, c - S * 0.04), (c - S * 0.05, c + S * 0.02)], fill=(96, 130, 104, 255))
+    for k in range(4):
+        y0 = c + S * (0.115 + k * 0.022)
+        e.rectangle((c - S * 0.21, y0, c + S * 0.21, y0 + S * 0.016), fill=(36, 82, 140, 255) if k % 2 == 0 else (60, 120, 176, 255))
+    mask = Image.new("L", (S, S), 0)
+    ImageDraw.Draw(mask).ellipse((S * 0.30, S * 0.30, S * 0.70, S * 0.70), fill=255)
+    img.paste(Image.composite(em, Image.new("RGBA", (S, S), (0, 0, 0, 0)), mask), (0, 0), mask)
+    d.ellipse((S * 0.30, S * 0.30, S * 0.70, S * 0.70), outline=navy, width=int(S * 0.006))
+    out = img.resize((size, size), Image.LANCZOS)
+    out.save(path, dpi=(300, 300))
     return path
 
 
