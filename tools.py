@@ -628,6 +628,32 @@ def run_python(code: str, session_id: str = None) -> dict:
     return result
 
 
+def create_letter_docx(filename: str, agency: str, recipient_lines: list, subject: str,
+                       paragraphs: list, office: str = "", seal_text: str = "SAMPLE SEAL",
+                       seal_image: str = None, date_text: str = None, closing: str = "Respectfully,",
+                       signatory: str = "", signatory_title: str = "", footer_note: str = "",
+                       session_id: str = None) -> dict:
+    """Build a well-formed one-page letter .docx in the workspace."""
+    from letters import build_letter
+    name = os.path.basename(filename or "letter.docx")
+    if not name.lower().endswith(".docx"):
+        name += ".docx"
+    check = guard.validate_file_write(name)
+    if not check["safe"]:
+        return {"status": "blocked", "output": check["message"], "risk_level": "blocked"}
+    out = os.path.join(WORKSPACE_DIR, name)
+    img = None
+    if seal_image:
+        cand = guard.validate_path(seal_image, allow_workspace_only=True)
+        img = cand if os.path.isfile(cand) else None
+    build_letter(out, agency=agency, office=office, seal_lines=str(seal_text).split(" ")[:3] if seal_text else ("SEAL",),
+                 seal_image=img, date_text=date_text, recipient_lines=list(recipient_lines or []),
+                 subject=subject, paragraphs=list(paragraphs or []), closing=closing,
+                 signatory=signatory, signatory_title=signatory_title, footer_note=footer_note)
+    return {"status": "success", "output": f"Letter saved: {name} ({os.path.getsize(out)} bytes). "
+            "It is in the workspace Files panel for download."}
+
+
 # ============================================================
 # IMAGE / FILE TOOLS
 # ============================================================
@@ -1052,6 +1078,37 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "create_letter_docx",
+            "description": (
+                "Create a polished one-page letter as a .docx (letterhead with a circular seal, date, "
+                "recipient, subject, body, closing, signatory). ALWAYS use this for letters, memos and "
+                "official-style documents instead of writing python-docx code yourself. "
+                "The date defaults to today. Use seal_image only with an image file already in the workspace."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "Output name, e.g. sample_letter.docx"},
+                    "agency": {"type": "string", "description": "Letterhead title, e.g. Province of Quezon"},
+                    "office": {"type": "string", "description": "Optional second letterhead line, e.g. Office of the Governor"},
+                    "seal_text": {"type": "string", "description": "Up to 3 short words drawn inside the placeholder seal, e.g. SAMPLE SEAL"},
+                    "seal_image": {"type": "string", "description": "Optional workspace path of a seal/logo image"},
+                    "date_text": {"type": "string", "description": "Optional date text; leave empty for today"},
+                    "recipient_lines": {"type": "array", "items": {"type": "string"}, "description": "Addressee lines"},
+                    "subject": {"type": "string", "description": "Subject line"},
+                    "paragraphs": {"type": "array", "items": {"type": "string"}, "description": "Body paragraphs"},
+                    "closing": {"type": "string", "description": "Closing, default Respectfully,"},
+                    "signatory": {"type": "string", "description": "Typed name (no real signature)"},
+                    "signatory_title": {"type": "string"},
+                    "footer_note": {"type": "string", "description": "Optional small red note, e.g. SAMPLE ONLY - NOT FOR OFFICIAL USE"},
+                },
+                "required": ["filename", "agency", "recipient_lines", "subject", "paragraphs"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "download_file",
             "description": (
                 "Download a file from a URL into the workspace. "
@@ -1185,9 +1242,10 @@ TOOL_FUNCTIONS = {
     "fetch_page": fetch_page,
     "pip_install": pip_install,
     "run_python": run_python,
+    "create_letter_docx": create_letter_docx,
     "download_file": download_file,
     "image_search": image_search,
     "process_image": process_image,
     "remove_background": remove_background,
     "recall_step": recall_step,
-}
+                                 }

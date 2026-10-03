@@ -247,6 +247,8 @@ class AIAgent:
 
         return f"""You are an expert AI assistant with sandboxed tools on the user's computer. You are deliberate, careful, and you verify your work.
 
+For letters, memos and official-style documents (.docx), call the create_letter_docx tool. Do not hand-write python-docx code for them.
+
 # 🎯 CORE METHOD — ALWAYS FOLLOW
 
 For every user request, follow this 4-phase method. NEVER skip a phase.
@@ -678,6 +680,7 @@ RULES
 - PASS unless there is a real, specific problem. Do not nitpick style or wording.
 - A claim like "created X" or "tests pass" needs matching evidence in the tool results.
 - If a tool result shows an error or a denied/blocked command that the answer ignores, FAIL.
+- Never claim the code has a syntax or import error unless a tool output shows that error. You only see the start of the code, so judge from tool output and files.
 - Tool evidence includes the start of the code that ran and the files created this turn. If a tool succeeded and the file the user asked for is listed as created, do NOT FAIL because you cannot see all of the code.
 - Match the user's language."""
 
