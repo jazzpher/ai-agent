@@ -315,3 +315,20 @@ JSONL session logs remain separate. No API key is included in this change.
 - **Answer check**: after tool use, the model checks its final answer against the tool results (max 2 fix rounds). `AGENT_VERIFY=off` disables it.
 - **Vision flag**: each provider slot has a Vision checkbox. Images from `view_file` are sent only when it is on.
 - **Models + benchmark**: "Fetch models" lists `/models`; "Benchmark (5 calls)" runs five small requests and shows pass/fail and time. Both only run when you click.
+
+### Responsive workspace
+
+The UI separates **Chat**, **Settings**, and **Session** into tabs. Chat keeps the
+composer at the bottom and scrolls replies inside the conversation. Provider
+slots are collapsed in Settings, and session usage/tools live in Session.
+Approval requests remain above the conversation with explicit Approve/Deny buttons.
+
+Local UI regression check (fake responses only, no provider calls):
+
+```bash
+pip install playwright
+python checks/ui_browser_check.py --output /tmp/ui-screenshots
+```
+
+This optional check uses `/usr/bin/google-chrome` and covers 320px/390px phone
+and 1280px desktop layouts. Playwright is not a production requirement.
