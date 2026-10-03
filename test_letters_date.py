@@ -34,4 +34,5 @@ def test_system_prompt_is_action_first():
     import agent
     a = agent.AIAgent()
     assert "ACTION FIRST" in a.system_prompt
-    assert "clearly harmful or illegal" in a.system_prompt
+    assert "clearly harmful requests aimed at hurting other people" in a.system_prompt
+    assert "ONE short reminder" in a.system_prompt
