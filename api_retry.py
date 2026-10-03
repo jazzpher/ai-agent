@@ -12,7 +12,8 @@ CONNECT_TIMEOUT_SECONDS = 20.0
 
 
 def build_timeout(read_seconds):
-    return httpx.Timeout(read_seconds, connect=min(CONNECT_TIMEOUT_SECONDS, read_seconds))
+    return httpx.Timeout(read_seconds, connect=min(CONNECT_TIMEOUT_SECONDS, read_seconds),
+                         write=30.0, pool=30.0)
 RETRY_DELAYS = (1, 2)  # three attempts, at most three seconds of backoff
 TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
 
