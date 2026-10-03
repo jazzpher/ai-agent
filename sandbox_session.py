@@ -411,6 +411,16 @@ class SessionManager:
         self._sessions: dict[str, SessionSandbox] = {}
         self._lock = threading.Lock()
 
+    def peek_status(self, session_id: str) -> dict:
+        """Read an initialized sandbox without creating one or waiting for installs.
+
+        Creation holds _lock while installing packages. Do not take that lock
+        in read-only UI paths. A completed sandbox is published to _sessions
+        only after initialization; get_status returns metadata, never I/O.
+        """
+        sb = self._sessions.get(session_id)
+        return sb.get_status() if sb is not None else {"mode": "not started", "available": False}
+
     def get_or_create(self, session_id: str = None) -> SessionSandbox:
         """Get existing sandbox or create a new one."""
         session_id = session_id or "default"
