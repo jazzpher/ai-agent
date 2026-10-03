@@ -520,37 +520,57 @@ def list_files(path: str = ".", session_id: str = None) -> dict:
         return {"status": "error", "output": str(e)}
 
 
+def _relevant(query: str, r: dict) -> bool:
+    terms = set(re.findall(r"[a-z0-9]{3,}", query.lower())) - {
+        "the", "and", "for", "with", "2026", "site", "current", "latest"}
+    text = " ".join(str(r.get(k, "")) for k in ("title", "body", "href", "url")).lower()
+    return not terms or any(t in text for t in terms)
+
+
+def _format_hits(query: str, hits) -> list:
+    out = []
+    for r in hits:
+        if not _relevant(query, r):
+            continue
+        href = r.get("href") or r.get("url", "")
+        date = f"\nDate: {r['date']}" if r.get("date") else ""
+        out.append(f"### {r.get('title', '')}\n{r.get('body', '')}{date}\nURL: {href}\n")
+    return out
+
+
 def web_search(query: str, max_results: int = 5, session_id: str = None) -> dict:
-    """Search the web. Uses duckduckgo_search (real results) if installed, else falls back."""
-    if not HAS_DDG:
-        return {
-            "status": "error",
-            "output": (
-                "ddgs is not installed. Run:\n"
-                "  pip install ddgs==9.16.0\n"
-                "and restart the agent."
-            ),
-        }
-    try:
-        results = []
-        # Preserve the user's exact query. Maintained DDGS supports multiple
-        # engines; the old package forced Bing and silently lost relevance.
-        with DDGS(timeout=12) as ddgs:
-            for r in ddgs.text(query, max_results=min(max(max_results, 1), 10), backend="auto"):
-                terms = set(re.findall(r"[a-z0-9]{3,}", query.lower())) - {
-                    "the", "and", "for", "with", "2026", "site", "current", "latest"}
-                text = " ".join(str(r.get(k, "")) for k in ("title", "body", "href", "url")).lower()
-                if terms and not any(t in text for t in terms):
-                    continue
-                title = r.get("title", "")
-                href = r.get("href") or r.get("url", "")
-                body = r.get("body", "")
-                results.append(f"### {title}\n{body}\nURL: {href}\n")
+    """Search the web: ddgs first, then a simplified query, then Bing RSS. Adds official-page hints."""
+    import research_guard as rg
+    n = min(max(max_results, 1), 10)
+    results, errors = [], []
+    attempts = [query]
+    short = rg.simplify_query(query)
+    if short and short.lower() != query.lower():
+        attempts.append(short)
+    for q in attempts:
+        if results:
+            break
+        if HAS_DDG:
+            try:
+                # Maintained DDGS supports multiple engines; old package forced Bing.
+                with DDGS(timeout=12) as ddgs:
+                    results = _format_hits(q, ddgs.text(q, max_results=n, backend="auto"))
+            except Exception as e:
+                errors.append(f"ddgs: {e}")
         if not results:
-            return {"status": "error", "output": "No relevant results. Try a shorter query or fetch known official pages directly. Do not treat this as research evidence."}
-        return {"status": "success", "output": _truncate("\n".join(results), max_chars=6000)}
-    except Exception as e:
-        return {"status": "error", "output": f"Search error: {e}"}
+            try:
+                results = _format_hits(q, rg.bing_rss_search(q, n))
+            except Exception as e:
+                errors.append(f"bing: {e}")
+    hints = rg.official_hints(query)
+    if not results:
+        msg = ("No relevant results. Do not treat this as research evidence. "
+               "Fetch known official pages directly with fetch_page, or report the missing evidence.")
+        if errors:
+            msg += " (" + "; ".join(errors)[:200] + ")"
+        return {"status": "error", "output": msg + ("\n" + hints if hints else "")}
+    return {"status": "success",
+            "output": _truncate("\n".join(results) + ("\n" + hints if hints else ""), max_chars=6500)}
 
 
 def fetch_page(url: str, max_chars: int = 12000, session_id: str = None) -> dict:
@@ -1255,4 +1275,4 @@ TOOL_FUNCTIONS = {
     "process_image": process_image,
     "remove_background": remove_background,
     "recall_step": recall_step,
-}
+    }
