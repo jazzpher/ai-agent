@@ -219,3 +219,72 @@ class VisionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoLimitTest(unittest.TestCase):
+    def tearDown(self):
+        patch.stopall()
+
+    def setup_tool(self):
+        self.executed = []
+        patch.dict(agent_mod.TOOL_FUNCTIONS,
+                   {"run_bash": lambda **kw: self.executed.append(kw) or {"status": "success", "output": "ok"}}).start()
+        patch.object(agent_mod.session_manager, "get_or_create", return_value=Sbx("docker")).start()
+
+    def test_no_default_limits(self):
+        import config
+        self.assertIsNone(config.MAX_ITERATIONS)
+        self.assertIsNone(config.MAX_TOTAL_SECONDS)
+
+    def test_runs_past_old_20_step_limit(self):
+        self.setup_tool()
+        script = [("tool", "run_bash", {"command": f"echo {i}"}) for i in range(30)] + [("text", "finished")]
+        a = make_agent(FakeClient(script))
+        with patch.dict(os.environ, {"AGENT_VERIFY": "off"}):
+            out = run(a)
+        self.assertEqual(len(self.executed), 30)
+        self.assertIn("finished", out)
+        self.assertNotIn("Stopped", out)
+
+    def test_no_wall_clock_cutoff(self):
+        self.setup_tool()
+        a = make_agent(FakeClient([("tool", "run_bash", {"command": "ls"}), ("text", "done")]))
+        real = time.time
+        with patch.object(agent_mod.time, "time", side_effect=lambda: real() + 10_000), \
+                patch.dict(os.environ, {"AGENT_VERIFY": "off"}):
+            out = run(a)
+        self.assertNotIn("budget", out)
+        self.assertIn("done", out)
+
+    def test_identical_repeated_calls_are_halted(self):
+        self.setup_tool()
+        script = [("tool", "run_bash", {"command": "ls"})] * 10
+        a = make_agent(FakeClient(script))
+        out = run(a)
+        self.assertEqual(len(self.executed), agent_mod.REPEAT_CALL_LIMIT - 1)
+        self.assertIn("looks like a loop", out)
+        # every tool_call has a reply, so the next turn is valid
+        calls = sum(len(m.get("tool_calls") or []) for m in a.messages if m.get("role") == "assistant")
+        replies = len([m for m in a.messages if m.get("role") == "tool"])
+        self.assertEqual(calls, replies)
+
+    def test_different_calls_do_not_trigger_guard(self):
+        self.setup_tool()
+        script = [("tool", "run_bash", {"command": "ls"}), ("tool", "run_bash", {"command": "pwd"})] * 6 + [("text", "ok")]
+        with patch.dict(os.environ, {"AGENT_VERIFY": "off"}):
+            out = run(make_agent(FakeClient(script)))
+        self.assertEqual(len(self.executed), 12)
+        self.assertNotIn("loop", out)
+
+    def test_stop_button_still_halts(self):
+        self.setup_tool()
+        a = make_agent(FakeClient([("tool", "run_bash", {"command": "ls"})] * 3))
+        a.cancel_requested = False
+        orig = a._get_client()
+        gen = a.chat_stream("go")
+        next(gen)
+        a.cancel_requested = True
+        out = ""
+        for out in gen:
+            pass
+        self.assertIn("cancel", out.lower())

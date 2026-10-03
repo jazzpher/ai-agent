@@ -31,6 +31,7 @@ from config import (
     DEFAULT_MODEL,
     MAX_ITERATIONS,
     MAX_TOTAL_SECONDS,
+    REPEAT_CALL_LIMIT,
     MAX_CONTEXT_MESSAGES,
     DEFAULT_MAX_TOKENS,
     DEFAULT_TEMPERATURE,
@@ -864,7 +865,11 @@ RULES
         self.iteration_count = 0
         full_response = ""
         start_time = time.time()
-        self._completion_deadline = time.monotonic() + MAX_TOTAL_SECONDS
+        self._completion_deadline = (time.monotonic() + MAX_TOTAL_SECONDS
+                                     if MAX_TOTAL_SECONDS else float("inf"))
+        self._loop_halted = False
+        self._last_call_sig = None
+        self._same_call_count = 0
         supports_reasoning = _model_supports_reasoning(self.model)
         self._log("user_message", content_len=len(user_message), has_uploads=bool(uploaded_files_info))
         self._load_memory()
@@ -899,9 +904,15 @@ RULES
         self._turn_evidence = []
         _verify_rounds = 0
 
-        while self.iteration_count < MAX_ITERATIONS:
-            # Wall-clock budget
-            if time.time() - start_time > MAX_TOTAL_SECONDS:
+        while MAX_ITERATIONS is None or self.iteration_count < MAX_ITERATIONS:
+            if self._loop_halted:
+                full_response += ("\n\n🔁 Stopped: the same tool call was repeated "
+                                  f"{REPEAT_CALL_LIMIT} times in a row, so this looks like a loop. "
+                                  "Send a new message to continue.")
+                self._log("repeat_halt", calls=self._same_call_count)
+                break
+            # Optional wall-clock budget (off by default)
+            if MAX_TOTAL_SECONDS and time.time() - start_time > MAX_TOTAL_SECONDS:
                 full_response += f"\n\n⏱️ Reached the {MAX_TOTAL_SECONDS}s wall-clock budget. Stopping."
                 self._log("budget_exceeded", elapsed=time.time() - start_time)
                 break
@@ -1134,6 +1145,15 @@ RULES
                     break
 
                 tool_name = tc["function"]["name"]
+                sig = (tool_name, tc["function"]["arguments"])
+                self._same_call_count = self._same_call_count + 1 if sig == self._last_call_sig else 1
+                self._last_call_sig = sig
+                if self._loop_halted or self._same_call_count >= REPEAT_CALL_LIMIT:
+                    # Every tool_call needs a reply, so answer it, run nothing, end the turn.
+                    self._loop_halted = True
+                    self.messages.append({"role": "tool", "tool_call_id": tc["id"],
+                                          "content": "Not run: repeated identical call; turn stopped."})
+                    continue
                 self.tool_call_count += 1
 
                 t0 = time.time()

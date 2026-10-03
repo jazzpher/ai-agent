@@ -181,7 +181,7 @@ python test_safety.py
 - Lahat ng blocked operations ay naka-log
 - Pwede mong i-customize ang safety rules sa `safety.py`
 - Ang workspace folder lang ang pwedeng galawin ng agent
-- **Max 20 tool calls** per message (configurable)
+- **No step or time limit** per message. A turn ends when the model finishes, you press Stop, or the same tool call repeats 5 times in a row. Optional caps: `AGENT_MAX_ITERATIONS`, `AGENT_MAX_SECONDS`
 - **Self-evaluation** is capped at 3 per turn to save tokens
 - Installed packages are **temporary** — host machine is never modified
 
@@ -282,7 +282,7 @@ Completion requests (chat, planning, review, and connection test) use a
 30-second request timeout with SDK retries disabled. Connection errors,
 timeouts, 429, and 500/502/503/504 responses get up to three attempts, with
 1/2-second backoffs. Chat falls back to the next configured provider only after
-those attempts are exhausted. Chat requests share a 120-second turn budget.
+those attempts are exhausted. Each model request times out after 30 seconds; there is no overall turn limit unless `AGENT_MAX_SECONDS` is set.
 Read-only metrics and sandbox-status views no longer create sandboxes or install
 packages. A new sandbox starts only when a tool needs it. This removes a slow,
 silent pre-request setup even for a simple greeting. The completed chat history

@@ -15,8 +15,14 @@ NVIDIA_BASE_URL = os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidi
 DEFAULT_MODEL = os.environ.get("AI_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
 
 # Agent settings
-MAX_ITERATIONS = 20                    # Maximum tool calls per conversation turn
-MAX_TOTAL_SECONDS = 120                # Wall-clock budget per chat_stream call
+# No default cap on steps or total time: a task runs until the model finishes,
+# the user presses Stop, or the repeated-call guard fires. Set AGENT_MAX_ITERATIONS
+# / AGENT_MAX_SECONDS to a positive number to opt back into a cap.
+# (unset, 0 or invalid = unlimited)
+MAX_ITERATIONS = int(os.environ["AGENT_MAX_ITERATIONS"]) if os.environ.get("AGENT_MAX_ITERATIONS", "").isdigit() and int(os.environ["AGENT_MAX_ITERATIONS"]) > 0 else None
+MAX_TOTAL_SECONDS = int(os.environ["AGENT_MAX_SECONDS"]) if os.environ.get("AGENT_MAX_SECONDS", "").isdigit() and int(os.environ["AGENT_MAX_SECONDS"]) > 0 else None
+# Halt a runaway loop: this many identical tool calls (same tool + arguments) in a row.
+REPEAT_CALL_LIMIT = 5
 MAX_CONTEXT_MESSAGES = 50              # Conversation trim threshold
 DEFAULT_MAX_TOKENS = 8192
 DEFAULT_TEMPERATURE = 0.3
