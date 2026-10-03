@@ -61,7 +61,10 @@ class RetryTest(unittest.TestCase):
     def test_client_timeout_and_no_hidden_retries(self):
         with patch.object(api_retry, 'OpenAI') as factory:
             api_retry.make_client('https://example.invalid', 'fake-key')
-        self.assertEqual(factory.call_args.kwargs['timeout'], 30)
+        t = factory.call_args.kwargs['timeout']
+        self.assertEqual(t.read, api_retry.REQUEST_TIMEOUT_SECONDS)
+        self.assertGreaterEqual(t.read, 120)
+        self.assertEqual(t.connect, 20)
         self.assertEqual(factory.call_args.kwargs['max_retries'], 0)
 
     def test_deadline_prevents_another_attempt(self):
@@ -69,7 +72,7 @@ class RetryTest(unittest.TestCase):
         with self.assertRaises(APIStatusError):
             api_retry.completion_with_retry(self.client, deadline=1)
         self.assertEqual(self.client.chat.completions.create.call_count, 1)
-        self.assertEqual(self.client.chat.completions.create.call_args.kwargs['timeout'], 1)
+        self.assertEqual(self.client.chat.completions.create.call_args.kwargs['timeout'].read, 1)
 
     def test_cancel_during_wait(self):
         self.client.chat.completions.create.side_effect = status(503)
@@ -108,6 +111,7 @@ class RetryTest(unittest.TestCase):
                      DEFAULT_MAX_TOKENS=8192, TOOL_DEFINITIONS=[], _model_supports_reasoning=lambda m: False,
                      completion_with_retry=api_retry.completion_with_retry, is_transient=api_retry.is_transient,
                      CompletionCancelled=api_retry.CompletionCancelled,
+                     _workspace_snapshot=lambda: {}, _changed_files=lambda before: [],
                      with_status=__import__("response_status").with_status)
         exec(compile(ast.fix_missing_locations(module), 'agent.py', 'exec'), scope)
         agent = scope['AIAgent']()
