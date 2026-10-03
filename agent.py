@@ -17,11 +17,14 @@ Output format (rendered as Markdown in the chat):
 import json
 import os
 import re
+import threading
 import time
 import uuid
 from datetime import datetime
 
 from response_status import with_status
+
+HEARTBEAT_SECONDS = 8.0  # keep the stream alive during slow sandbox/tool work
 
 from api_retry import make_client, completion_with_retry, is_transient, CompletionCancelled
 
@@ -556,6 +559,31 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
         except Exception as e:
             self._log("approval_check_failed", error=type(e).__name__)
         return None
+
+    def _in_background(self, fn, label: str, interval: float = None):
+        """Run fn in a worker thread. Yield ("beat", text) every `interval` seconds
+        so the stream never goes silent (proxies drop idle connections), then
+        yield ("done", result). Exceptions in fn are re-raised here."""
+        interval = HEARTBEAT_SECONDS if interval is None else interval
+        box = {}
+
+        def work():
+            try:
+                box["value"] = fn()
+            except BaseException as e:  # noqa: BLE001 - re-raised below
+                box["error"] = e
+
+        t = threading.Thread(target=work, daemon=True)
+        t0 = time.time()
+        t.start()
+        while True:
+            t.join(interval)
+            if not t.is_alive():
+                break
+            yield ("beat", f"\n\n⏳ {label}... {int(time.time() - t0)}s\n\n")
+        if "error" in box:
+            raise box["error"]
+        yield ("done", box.get("value"))
 
     def _execute_tool(self, tool_name: str, arguments: dict) -> dict:
         if tool_name not in TOOL_FUNCTIONS:
@@ -1157,7 +1185,13 @@ RULES
                 self.tool_call_count += 1
 
                 t0 = time.time()
-                prompt = self._approval_prompt(tool_name, args)
+                prompt = None
+                for kind, val in self._in_background(
+                        lambda: self._approval_prompt(tool_name, args), "Inihahanda ang sandbox"):
+                    if kind == "beat":
+                        yield full_response + val
+                    else:
+                        prompt = val
                 if prompt:
                     text, sbx_mode = prompt
                     full_response += (
@@ -1170,13 +1204,25 @@ RULES
                         self.session_id, text, cancelled=lambda: self.cancel_requested)
                     self._log("approval", tool=tool_name, approved=approved)
                     if approved:
-                        result = self._execute_tool(tool_name, args)
+                        result = None
+                        for kind, val in self._in_background(
+                                lambda: self._execute_tool(tool_name, args), f"Tumatakbo ang {tool_name}"):
+                            if kind == "beat":
+                                yield full_response + val
+                            else:
+                                result = val
                     else:
                         result = {"status": "blocked", "risk_level": "risky",
                                   "output": "The user denied (or did not answer) the approval request. "
                                             "Do not retry this command. Choose a safer approach or ask the user."}
                 else:
-                    result = self._execute_tool(tool_name, args)
+                    result = None
+                    for kind, val in self._in_background(
+                            lambda: self._execute_tool(tool_name, args), f"Tumatakbo ang {tool_name}"):
+                        if kind == "beat":
+                            yield full_response + val
+                        else:
+                            result = val
                 elapsed = time.time() - t0
 
                 summary = _summarize_result(result)
