@@ -19,7 +19,7 @@ def test_current_date_in_analysis_and_short_scope():
     a._analyze_task(client, 'research hosting', '')
     kw = client.calls[0]
     assert agent_mod._today_text() in kw['messages'][0]['content']
-    assert kw['max_tokens'] == 500
+    assert kw['max_tokens'] == 800
     assert '3-6 sources' in kw['messages'][0]['content']
     patch.stopall()
 
