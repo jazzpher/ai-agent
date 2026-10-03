@@ -1093,7 +1093,7 @@ TOOL_DEFINITIONS = [
                     "office": {"type": "string", "description": "Optional second letterhead line, e.g. Office of the Governor"},
                     "seal_text": {"type": "string", "description": "Up to 3 short words drawn inside the placeholder seal, e.g. SAMPLE SEAL"},
                     "seal_image": {"type": "string", "description": "Optional workspace path of a seal/logo image"},
-                    "date_text": {"type": "string", "description": "Optional date text; leave empty for today"},
+                    "date_text": {"type": "string", "description": "Leave EMPTY unless the user gave a date; empty uses today (you do not know today)"},
                     "recipient_lines": {"type": "array", "items": {"type": "string"}, "description": "Addressee lines"},
                     "subject": {"type": "string", "description": "Subject line"},
                     "paragraphs": {"type": "array", "items": {"type": "string"}, "description": "Body paragraphs"},
@@ -1248,4 +1248,4 @@ TOOL_FUNCTIONS = {
     "process_image": process_image,
     "remove_background": remove_background,
     "recall_step": recall_step,
-                                 }
+}
