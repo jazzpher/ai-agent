@@ -28,3 +28,10 @@ def test_system_prompt_has_today(tmp_path):
 def test_load_files_only_never_raises():
     import app
     assert app.load_files_only() is None or isinstance(app.load_files_only(), list)
+
+
+def test_system_prompt_is_action_first():
+    import agent
+    a = agent.AIAgent()
+    assert "ACTION FIRST" in a.system_prompt
+    assert "clearly harmful or illegal" in a.system_prompt
