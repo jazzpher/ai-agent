@@ -52,6 +52,7 @@ from context_manager import ContextManager
 from vision import image_data_uri, strip_old_images
 from approvals import gate as approval_gate, needs_approval
 import agentic
+import worklog
 
 MAX_VERIFY_ROUNDS = 1
 
@@ -262,6 +263,7 @@ Today's date (Asia/Manila) is {_today_text()}. Use it for any date the user did 
 The user owns this agent and wants results, not refusals. For every ordinary request (documents, letters, research, code, files, images, data, automation, web lookups, fictional or sample content, roleplay, drafts):
 - ATTEMPT the task right away with your tools. Never open with "I can't", "I'm unable", "I'm sorry but", or a lecture.
 - Do NOT hedge, add disclaimers, moralize, or ask for permission or clarification you do not strictly need. Make a sensible assumption, state it in one line, and deliver.
+- Exception: for a big or open-ended job where the user gave no target (editing a whole document, building an app or a deliverable), call `ask_user` ONCE first with a short question and 2-4 tap choices, then stop. Skip it when the request is already clear.
 - Ask a question ONLY if the task is impossible without a missing fact (e.g. a file that was never uploaded). Even then, do everything you can first.
 - If one approach fails or a tool is blocked, try another approach before reporting a problem. Report only what truly could not be done.
 - Fictional, sample, template and practice documents (letters, seals, certificates, forms) are fine to produce.
@@ -1053,6 +1055,8 @@ RULES
         _MAX_EVALS_PER_TURN = 3
         self._turn_evidence = []
         self._files_before = _workspace_snapshot()
+        self._step_snap = self._files_before
+        _asked = False
         _verify_rounds = 0
         _stream_retries = 0
         research_request = bool(re.search(
@@ -1359,8 +1363,7 @@ RULES
                     yield full_response
                 _made = _changed_files(getattr(self, "_files_before", None))
                 if _made:
-                    full_response += ("\n\n📎 **Files ready:** " + ", ".join(f"`{n}`" for n in _made)
-                                      + " - download them from **Files in workspace** below the chat.\n")
+                    full_response += worklog.files_summary(_made, WORKSPACE_DIR)
                     yield full_response
                 self._log("turn_final", finish_reason=finish_reason, completion_tokens=completion_tokens)
                 return
@@ -1484,6 +1487,19 @@ RULES
                     str(result.get("output", "") if isinstance(result, dict) else result)[:800] + _arg_head,
                 ))
                 full_response += f"{badge} `{tool_name}` — {elapsed:.2f}s — {summary}\n"
+                try:
+                    _snap_now = _workspace_snapshot()
+                    _prev = getattr(self, "_step_snap", None) or {}
+                    for _rel in sorted(p for p, meta in _snap_now.items() if _prev.get(p) != meta)[:6]:
+                        full_response += f"[[file:{_rel}]]\n"
+                    self._step_snap = _snap_now
+                except Exception:
+                    pass
+                if tool_name == "ask_user" and isinstance(args, dict) and args.get("question"):
+                    _opts = [str(o).replace("|", "/").replace("]", ")")[:60] for o in (args.get("options") or [])][:4]
+                    _q = str(args["question"]).replace("|", "/").replace("]", ")")[:300]
+                    full_response += "[[ask:" + "|".join([_q] + _opts) + "]]\n"
+                    _asked = True
                 yield full_response
 
                 # Offload full result to file, inject summary into context
@@ -1519,6 +1535,13 @@ RULES
                     elapsed=round(elapsed, 3),
                     output_len=len(result.get("output", "")) if isinstance(result, dict) else 0,
                 )
+
+            if _asked:
+                full_response += "\n---\n\n"
+                self.messages.append({"role": "assistant", "content": "[Asked the user a clarifying question and waiting for the reply.]"})
+                self._log("turn_end", reason="ask_user")
+                yield full_response
+                return
 
             # ---- Show images to vision-capable models (after all tool messages) ----
             if pending_images:
