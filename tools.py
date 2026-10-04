@@ -41,6 +41,13 @@ def recall_step(step_id: int, session_id: str = None) -> dict:
         return {"status": "error", "output": f"Cannot recall step {step_id}: {e}"}
 
 
+def memory(action: str, text: str = "", session_id: str = None) -> dict:
+    """Small persistent memory (add / list / forget) stored in the workspace MEMORY.md."""
+    from agentic import memory_action
+    from config import MEMORY_FILE
+    return memory_action(MEMORY_FILE, action, text)
+
+
 def get_sandbox_status(session_id: str = None) -> dict:
     """Public helper for the UI: describe the current sandbox mode."""
     if session_id:
@@ -1286,6 +1293,26 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory",
+            "description": (
+                "Persistent memory across chats. action=add saves one short durable fact or preference "
+                "the user stated or a lesson that will help later (never keys or passwords); "
+                "action=list shows saved facts; action=forget removes facts containing `text`. "
+                "Saved facts are loaded into every new turn. On the free host the memory may reset on restart."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["add", "list", "forget"]},
+                    "text": {"type": "string", "description": "The fact (add) or a fragment to remove (forget)."},
+                },
+                "required": ["action"],
+            },
+        },
+    },
 ]
 
 
@@ -1307,4 +1334,5 @@ TOOL_FUNCTIONS = {
     "process_image": process_image,
     "remove_background": remove_background,
     "recall_step": recall_step,
-    }
+    "memory": memory,
+}
