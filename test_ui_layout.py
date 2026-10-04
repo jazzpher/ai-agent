@@ -58,3 +58,28 @@ class MobileChatHeightTests(unittest.TestCase):
         self.assertIn('calc(100dvh - 156px)', CSS)
         self.assertIn('#conversation-heading {display:none;}', CSS)
         self.assertIn('#render-notice {display:none;}', CSS)
+
+
+class ActivityBarTests(unittest.TestCase):
+    def test_phase_and_markup(self):
+        import time
+        import app as a
+        self.assertEqual(a.activity_phase("x\n\n⏳ Waiting for the model…\n\n"), "waiting for the model")
+        self.assertEqual(a.activity_phase("⏳ Model is thinking; waiting for answer…"), "thinking")
+        self.assertEqual(a.activity_phase("🔧 **Action:** `bash`"), "running a tool")
+        self.assertEqual(a.activity_phase("hello"), "writing")
+        ag = AIAgent(api_key='fake')
+        self.assertFalse(a.activity_html(ag)["visible"])
+        ag._ui_running = True; ag._ui_started = time.monotonic() - 65
+        ag._ui_history = [{"role": "assistant", "content": "⏳ Waiting for the model…"}]
+        out = a.activity_html(ag)
+        self.assertTrue(out["visible"])
+        for part in ("act-dots", "1:05", "waiting for the model", "act-lost", "last update"):
+            self.assertIn(part, out["value"])
+        ag._ui_activity_changed = time.monotonic() - 60
+        self.assertIn("still connected", a.activity_html(ag)["value"])
+
+    def test_css_motion_safe(self):
+        self.assertIn("act-bounce", CSS)
+        self.assertIn("act-lost-show", CSS)
+        self.assertIn(".act-dots i {animation:none", CSS)

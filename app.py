@@ -599,6 +599,55 @@ def poll_background_chat(agent):
             gr.update(), gr.update(), gr.update(), gr.update())
 
 
+def activity_phase(text):
+    """Short phase label from the tail of the live reply (cheap, no model call)."""
+    tail = (text or "")[-400:]
+    if "Retrying" in tail:
+        return "retrying the model"
+    if "Waiting for the model" in tail:
+        return "waiting for the model"
+    if "Model is thinking" in tail or "Analyzing your request" in tail:
+        return "thinking"
+    if "Running" in tail and "\u23f3" in tail:
+        return "running a tool"
+    if "**Action:**" in tail:
+        return "running a tool"
+    return "writing"
+
+
+def activity_html(agent):
+    """Always-visible busy bar. Pure CSS animation; each poll re-renders it, which
+    restarts the watchdog animation. If polls stop (server asleep / connection lost)
+    the bar flips itself to 'no signal' after a few seconds with no JavaScript."""
+    import html as _html
+    if not getattr(agent, "_ui_running", False):
+        return gr.update(value="", visible=False)
+    now = time.monotonic()
+    elapsed = int(now - getattr(agent, "_ui_started", now))
+    history = getattr(agent, "_ui_history", None) or []
+    text = history[-1].get("content", "") if history and isinstance(history[-1].get("content", ""), str) else ""
+    mark = (len(text), text[-80:])
+    if mark != getattr(agent, "_ui_activity_mark", None):
+        agent._ui_activity_mark = mark
+        agent._ui_activity_changed = now
+    quiet = int(now - getattr(agent, "_ui_activity_changed", now))
+    phase = activity_phase(text)
+    mm, ss = divmod(elapsed, 60)
+    clock = f"{mm}:{ss:02d}"
+    if quiet >= 45:
+        cls, note = "slow", f"no new output for {quiet}s, still connected"
+    else:
+        cls, note = "ok", f"last update {quiet}s ago"
+    return gr.update(visible=True, value=(
+        f'<div class="activity-bar {cls}" role="status" aria-live="off">'
+        '<span class="act-dots" aria-hidden="true"><i></i><i></i><i></i></span>'
+        f'<span class="act-phase">{_html.escape(phase)}</span>'
+        f'<span class="act-time">{clock}</span>'
+        f'<span class="act-note">{_html.escape(note)}</span>'
+        '<span class="act-lost" aria-hidden="true">no signal from server. It may be restarting; keep this page open.</span>'
+        '</div>'))
+
+
 # ============================================================
 # UI BUILDER
 # ============================================================
@@ -741,6 +790,7 @@ def build_app():
                         type="messages", allow_tags=False, show_label=False,
                         placeholder=EMPTY_CHAT,
                     )
+                    activity_bar = gr.HTML(value="", visible=False, elem_id="activity-wrap")
                     with gr.Column(elem_id="composer"):
                         model_dd = gr.Dropdown(choices=model_choices(), value=(model_choices() or [(None, None)])[0][1],
                                                label="Model", allow_custom_value=True, filterable=False,
@@ -882,6 +932,10 @@ def build_app():
         chat_timer = gr.Timer(1.5)
         chat_timer.tick(poll_background_chat, inputs=[agent_state], outputs=chat_outputs,
                         queue=False, show_progress="hidden")
+
+        activity_timer = gr.Timer(1.0)
+        activity_timer.tick(activity_html, inputs=[agent_state], outputs=[activity_bar],
+                            queue=False, show_progress="hidden")
 
         # Approval banner: poll for a pending request from the running agent
         def poll_approval(agent: AIAgent):
