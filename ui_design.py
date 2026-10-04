@@ -217,7 +217,7 @@ footer {display:none !important;}
 
 /* Work log, file cards, quick-choice chips */
 .wl, .fc {border:1px solid var(--ws-line); border-radius:10px; margin:6px 0; background:var(--ws-panel); font-size:13px;}
-.wl > summary, .fc > summary {cursor:pointer; padding:9px 12px; display:flex; align-items:center; gap:8px; list-style:none; min-height:36px;}
+.wl > summary, .fc > summary {position:relative; z-index:1; cursor:pointer; padding:9px 12px; display:flex; align-items:center; gap:8px; list-style:none; min-height:36px;}
 .wl > summary::-webkit-details-marker, .fc > summary::-webkit-details-marker {display:none;}
 .wl > summary::before {content:"\\203A"; color:var(--ws-muted); transition:transform .15s;}
 .wl[open] > summary::before {transform:rotate(90deg);}
@@ -273,6 +273,34 @@ footer {display:none !important;}
 .ft-ic.py {background:#3572a5;} .ft-ic.js {background:#b8860b;} .ft-ic.tb {background:#2e7d4f;} .ft-ic.pd {background:#b3261e;} .ft-ic.dc {background:#2b5fb4;} .ft-ic.zp {background:#7a5c2e;}
 .ft-empty {padding:16px; color:var(--ws-muted); font-size:13px;}
 
+/* Artifact cards and public work activity */
+.fc-artifact {position:relative; overflow:hidden;}
+.fc-head {display:flex; align-items:center; gap:8px; padding:10px 12px;}
+.fc-artifact-preview {height:210px; overflow:hidden; background:var(--ws-surface);}
+.fc-artifact-preview iframe {width:100%; height:300px; border:0; pointer-events:none;}
+.fc-placeholder {padding:24px; font-size:22px; overflow-wrap:anywhere;}
+.fc-open {position:absolute; bottom:14px; left:50%; transform:translateX(-50%); padding:9px 20px; border:1px solid var(--ws-line); border-radius:10px; background:var(--ws-panel); color:var(--ws-ink); cursor:pointer; min-height:44px;}
+.wl-detail {width:100%;}
+.wl-box {border:1px solid var(--ws-line); border-radius:8px; overflow:hidden; margin:6px 0;}
+.wl-box-head {display:flex; justify-content:space-between; align-items:center; padding:6px 10px; color:var(--ws-muted);}
+.wl-copy {background:transparent; color:inherit; border:1px solid var(--ws-line); border-radius:5px; cursor:pointer; min-height:32px; padding:3px 9px;}
+.wl-box pre, .writing-live pre {margin:0 !important; padding:10px; font-size:11px; max-height:230px; overflow:auto; white-space:pre;}
+.writing-live {border:1px solid var(--ws-line); border-radius:10px; overflow:hidden; margin:8px 0;}
+.writing-title {padding:9px 12px; font-size:13px; display:flex; align-items:center; gap:8px; overflow-wrap:anywhere;}
+.busy-dot {width:7px; height:7px; border-radius:50%; background:var(--ws-muted); animation:activity-pulse 1.2s ease-in-out infinite; flex:none;}
+@keyframes activity-pulse {50% {opacity:.3;}}
+#artifact-pick {position:absolute !important; width:1px; height:1px; overflow:hidden; opacity:0; pointer-events:none;}
+#artifact-viewer {position:fixed !important; inset:0; z-index:1100; background:var(--ws-surface); display:flex; flex-direction:column; padding:max(10px,env(safe-area-inset-top)) 10px max(10px,env(safe-area-inset-bottom)); gap:8px;}
+#artifact-viewer[style*="display: none"], #artifact-viewer.hide {display:none !important;}
+#artifact-toolbar {flex:none; align-items:center; flex-wrap:nowrap;}
+#artifact-title {min-width:0; flex:1; overflow-wrap:anywhere; font-size:13px;}
+#artifact-toolbar button, #artifact-toolbar a {min-width:65px !important; flex:none; min-height:40px;}
+#artifact-body {flex:1; min-height:0; overflow:auto;}
+#artifact-body .fp-frame {height:calc(100dvh - 88px); min-height:0;}
+#files-panel {animation:sheet-rise .22s ease-out;}
+@keyframes sheet-rise {from {transform:translateY(100%); opacity:.4;} to {transform:translateY(0); opacity:1;}}
+@media (prefers-reduced-motion:reduce) {.busy-dot, #files-panel {animation:none !important;}}
+
 '''
 
 
@@ -289,7 +317,48 @@ PAGE_JS = """
     el.dispatchEvent(new Event('input', {bubbles: true}));
     return true;
   };
+  const hydrate = () => {
+    document.querySelectorAll('.fc-artifact').forEach(card => {
+      const button = card.querySelector('.fc-open');
+      const preview = card.querySelector('.fc-artifact-preview');
+      if (!button || !preview || preview.querySelector('iframe')) return;
+      try {
+        const bytes = Uint8Array.from(atob(button.value), c => c.charCodeAt(0));
+        const data = JSON.parse(new TextDecoder().decode(bytes));
+        const frame = document.createElement('iframe');
+        frame.setAttribute('sandbox', 'allow-scripts');
+        frame.setAttribute('title', data.path + ' preview');
+        frame.setAttribute('loading', 'lazy');
+        // The opaque origin never receives parent cookies or DOM access.
+        frame.srcdoc = data.web ? data.html : '<style>body{font:15px system-ui; padding:14px; color:#222; background:#fff}pre{white-space:pre-wrap}</style>' + data.html;
+        preview.replaceChildren(frame);
+      } catch (_) {}
+    });
+  };
+  let pending = false;
+  const observer = new MutationObserver(() => {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => { pending = false; hydrate(); });
+  });
+  observer.observe(document.getElementById('agent-chat') || document.body, {childList:true, subtree:true});
+  hydrate();
   document.addEventListener('click', (e) => {
+    const open = e.target.closest('.fc-open');
+    if (open) {
+      try {
+        const bytes = Uint8Array.from(atob(open.value), c => c.charCodeAt(0));
+        const data = JSON.parse(new TextDecoder().decode(bytes));
+        setVal(document.getElementById('artifact-pick'), data.path);
+      } catch (_) {}
+      return;
+    }
+    const copy = e.target.closest('.wl-copy');
+    if (copy) {
+      const text = copy.closest('.wl-box').querySelector('pre').textContent;
+      if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => {copy.textContent='Copied';}).catch(() => {});
+      return;
+    }
     const row = e.target.closest('[data-fpath]');
     if (row) { setVal(document.getElementById('files-pick'), row.getAttribute('data-fpath')); return; }
     const chip = e.target.closest('.qc');
@@ -299,6 +368,20 @@ PAGE_JS = """
       if (setVal(document.getElementById('message-input'), chip.textContent.trim())) {
         setTimeout(() => { const b = document.querySelector('#send-button'); if (b) b.click(); }, 80);
       }
+    }
+  });
+  let dragY = null;
+  document.addEventListener('pointerdown', e => {
+    if (e.target.closest('#files-grip')) dragY = e.clientY;
+  });
+  document.addEventListener('pointerup', e => {
+    if (dragY !== null && e.clientY - dragY > 70) document.querySelector('#files-close')?.click();
+    dragY = null;
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      document.querySelector('#artifact-close')?.click();
+      document.querySelector('#files-close')?.click();
     }
   });
 }

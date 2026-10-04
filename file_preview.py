@@ -5,6 +5,8 @@ import html
 import io
 import mimetypes
 import os
+import re
+from urllib.parse import unquote
 
 MAX_BYTES = 15 * 1024 * 1024
 MAX_TEXT_CHARS = 200_000
@@ -105,8 +107,53 @@ def _image(path, ext):
     return _wrap(f'<img class="fp-image" alt="{html.escape(os.path.basename(path))}" src="data:{mime};base64,{b64}">')
 
 
-def _webpage(path):
+def webpage_source(path):
+    """Bundle local image/CSS/JS assets into an opaque-origin preview, never outside its folder."""
     raw = open(path, "r", encoding="utf-8", errors="replace").read(MAX_TEXT_CHARS * 5)
+    root = os.path.dirname(os.path.realpath(path))
+    def asset(url):
+        if not url or re.match(r"(?:[a-z]+:|//|#|/)", url, re.I):
+            return None
+        real = safe_workspace_path(os.path.join(root, unquote(url.split("?")[0].split("#")[0])), root)
+        if not real or os.path.getsize(real) > 2_000_000:
+            return None
+        return real
+    def image(m):
+        real = asset(m[2])
+        if not real or os.path.splitext(real)[1].lower() not in IMAGE_EXT:
+            return m[0]
+        mime = mimetypes.guess_type(real)[0] or "image/png"
+        data = base64.b64encode(open(real, "rb").read()).decode()
+        return m[1] + "data:" + mime + ";base64," + data + m[3]
+    raw = re.sub(r'(src=["\'])([^"\']+)(["\'])', image, raw, flags=re.I)
+    def css(m):
+        real = asset(m[2])
+        if not real or not real.lower().endswith(".css"):
+            return m[0]
+        return "<style>" + open(real, encoding="utf-8", errors="replace").read(MAX_TEXT_CHARS).replace("</style", "<\\/style") + "</style>"
+    raw = re.sub(r'<link\b[^>]*href=(["\'])([^"\']+)\1[^>]*>', css, raw, flags=re.I)
+    def js(m):
+        real = asset(m[2])
+        if not real or not real.lower().endswith(".js"):
+            return m[0]
+        return "<script>" + open(real, encoding="utf-8", errors="replace").read(MAX_TEXT_CHARS).replace("</script", "<\\/script") + "</script>"
+    raw = re.sub(r'<script\b[^>]*src=(["\'])([^"\']+)\1[^>]*>\s*</script>', js, raw, flags=re.I)
+    return raw
+
+
+def markdown_body(raw):
+    """Render Markdown with raw HTML escaped before parsing. No executable markup."""
+    from markdown_it import MarkdownIt
+    return MarkdownIt("commonmark", {"html": False}).render(raw[:MAX_TEXT_CHARS])
+
+
+def _markdown(path):
+    raw = open(path, encoding="utf-8", errors="replace").read(MAX_TEXT_CHARS + 1)
+    return _wrap('<article class="fp-doc">' + markdown_body(raw) + '</article>')
+
+
+def _webpage(path):
+    raw = webpage_source(path)
     # Sandboxed iframe: scripts may run, but no same-origin access to this app or its cookies.
     frame = (f'<iframe class="fp-frame" sandbox="allow-scripts allow-forms allow-popups" '
              f'srcdoc="{html.escape(raw, quote=True)}"></iframe>')
@@ -171,6 +218,8 @@ def render_preview(path):
             return _image(path, ext)
         if ext in (".html", ".htm"):
             return _webpage(path)
+        if ext in (".md", ".markdown"):
+            return _markdown(path)
         if ext == ".csv":
             return _csv(path)
         if ext == ".tsv":

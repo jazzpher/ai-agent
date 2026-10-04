@@ -2,6 +2,9 @@
 file cards with inline preview, quick-choice chips and a final file summary.
 Pure functions; the agent's own message history is never changed."""
 import html
+import base64
+import json
+from functools import lru_cache
 import os
 import re
 
@@ -20,6 +23,7 @@ _ACTION = re.compile(r"\n*🔧 \*\*Action:\*\*[^\n]*\n+")
 _STEP = re.compile(r"^(✅|❌|🚫) `([\w\-]+)` — ([\d.]+)s — (.*)$")
 _FILE = re.compile(r"\[\[file:([^\]\n]+)\]\]")
 _ASK = re.compile(r"\[\[ask:([^\]\n]+)\]\]")
+_DETAIL = re.compile(r"\[\[detail:([A-Za-z0-9+/=]+)\]\]")
 _END = "\n---\n"
 
 
@@ -38,8 +42,8 @@ def _group_html(category, steps):
     bad = any(s[0] != "✅" for s in steps)
     rows = "".join(
         f'<div class="wl-row{" bad" if s[0] != "✅" else ""}"><code>{_esc(s[1])}</code>'
-        f'<span class="wl-t">{_fmt_secs(s[2])}</span><div class="wl-s">{_esc(s[3])}</div></div>'
-        for s in steps)
+        f'<span class="wl-t">{_fmt_secs(s[2])}</span><div class="wl-s">{_esc(s[3])}</div>'
+        + (s[4] if len(s) > 4 else "") + "</div>" for s in steps)
     return (f'<details class="wl"><summary><span class="wl-i">{ICONS.get(category, "")}</span> {label}'
             f'<span class="wl-t">{_fmt_secs(total)}{" · issue" if bad else ""}</span></summary>{rows}</details>')
 
@@ -48,6 +52,18 @@ def _block_html(inner, running):
     """inner = text after the Action line up to the block end. Returns (html, leftover_text)."""
     groups, left, checks = [], [], []
     for line in inner.split("\n"):
+        detail = _DETAIL.fullmatch(line.strip())
+        if detail and groups and groups[-1][1]:
+            try:
+                data = json.loads(base64.b64decode(detail[1]))
+                boxes = "".join('<div class="wl-box"><div class="wl-box-head">' + label +
+                    '<button type="button" class="wl-copy">Copy</button></div><pre>' + _esc(data.get(key, "")) + '</pre></div>'
+                    for label, key in (("Input", "input"), ("Output", "output")))
+                group = groups[-1][1]
+                group[-1] = (*group[-1][:4], '<div class="wl-detail">' + boxes + '</div>')
+            except (ValueError, TypeError, KeyError):
+                pass
+            continue
         m = _STEP.match(line.strip())
         if m:
             cat = CATEGORIES.get(m.group(2), "Other")
@@ -70,7 +86,75 @@ def _block_html(inner, running):
     return out, "\n".join(left)
 
 
+def tool_detail(args, result):
+    # Display public tool inputs/outputs only, not private reasoning or provider metadata.
+    public = {k: v for k, v in (args or {}).items() if k not in {"session_id", "api_key", "password", "token"}}
+    raw = public.get("command") or public.get("code") or json.dumps(public, ensure_ascii=False, indent=2)
+    output = result.get("output", "") if isinstance(result, dict) else str(result)
+    def clip(text):
+        text = str(text)
+        return text[:12000] + ("\n[Display cut short]" if len(text) > 12000 else "")
+    payload = base64.b64encode(json.dumps({"input": clip(raw), "output": clip(output)}, ensure_ascii=False).encode()).decode()
+    return "[[detail:" + payload + "]]\n"
+
+
+def _json_string_prefix(raw, key):
+    """Decode the complete prefix of one JSON string, including split escapes."""
+    m = re.search(r'"' + re.escape(key) + r'"\s*:\s*"', raw)
+    if not m:
+        return ""
+    out, i = [], m.end()
+    escapes = {'n': '\n', 'r': '\r', 't': '\t', 'b': '\b', 'f': '\f', '"': '"', '/': '/', '\\': '\\'}
+    while i < len(raw):
+        c = raw[i]
+        if c == '"':
+            break
+        if c == '\\':
+            if i + 1 >= len(raw):
+                break
+            e = raw[i + 1]
+            if e == 'u':
+                if i + 6 > len(raw):
+                    break
+                try:
+                    out.append(chr(int(raw[i+2:i+6], 16)))
+                except ValueError:
+                    break
+                i += 6
+                continue
+            out.append(escapes.get(e, e)); i += 2
+        else:
+            out.append(c); i += 1
+    return "".join(out)
+
+
+def writing_activity(tool_calls):
+    sections = []
+    for item in tool_calls.values():
+        name, raw = item.get("name", ""), item.get("arguments", "")
+        if name not in {"write_file", "edit_file"}:
+            continue
+        path = _json_string_prefix(raw, "path")
+        code = _json_string_prefix(raw, "content" if name == "write_file" else "new_string")
+        # Last 24 lines keep streaming output bounded even for a large document.
+        lines = code.splitlines(); start = max(0, len(lines) - 24)
+        shown = "\n".join(f"{i+1:>4}  {line[:400]}" for i, line in enumerate(lines[start:], start))
+        sections.append('<div class="writing-live"><div class="writing-title"><span class="busy-dot"></span>' +
+                        ("Writing " if name == "write_file" else "Editing ") + _esc(path or "file…") +
+                        '</div><pre>' + _esc(shown) + '</pre></div>')
+    return "\n\n" + "".join(sections) if sections else ""
+
+
 def file_card(path, rel=None):
+    try:
+        stat = os.stat(path)
+        return _file_card_cached(path, rel, stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return ""
+
+
+@lru_cache(maxsize=24)
+def _file_card_cached(path, rel, mtime, size):
     """HTML card with inline preview for text-like files."""
     name = rel or os.path.basename(path)
     ext = os.path.splitext(name)[1].lower()
@@ -81,6 +165,17 @@ def file_card(path, rel=None):
     kb = f"{size / 1024:.1f} KB" if size >= 1024 else f"{size} B"
     tag = (ext[1:] or "file").upper()[:6]
     head = f'<span class="fc-tag">{_esc(tag)}</span><span class="fc-name">{_esc(name)}</span><span class="wl-t">{kb}</span>'
+    if ext in {".html", ".htm", ".md", ".markdown"} and size <= 2_000_000:
+        from file_preview import webpage_source, markdown_body
+        raw = open(path, encoding="utf-8", errors="replace").read(200_000)
+        body = webpage_source(path) if ext in {".html", ".htm"} else markdown_body(raw)
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", raw, re.I | re.S)
+        title = re.sub(r"<[^>]*>", "", title_match[1]) if title_match else name
+        # Chat sanitizes iframes. PAGE_JS hydrates a sandboxed frame from this bounded envelope.
+        envelope = base64.b64encode(json.dumps({"path": name, "html": body, "web": ext in {".html", ".htm"}}, ensure_ascii=False).encode()).decode()
+        return ('<div class="fc fc-artifact"><div class="fc-head">' + head + '</div>' +
+                '<div class="fc-artifact-preview"><div class="fc-placeholder">' + _esc(title[:120]) + '</div></div>' +
+                '<button type="button" class="fc-open" value="' + envelope + '">Open</button></div>')
     if ext in TEXT_EXT and size <= 2_000_000:
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -117,16 +212,18 @@ def render(text, workspace_dir=None, running=False):
         out.append("\n\n" + h + "\n\n" + (left + "\n" if left else ""))
         for fm in _FILE.finditer(inner):
             rel = fm.group(1)
-            real = os.path.join(workspace_dir or "", rel)
-            card = file_card(real, rel)
+            from file_preview import safe_workspace_path
+            real = safe_workspace_path(os.path.join(workspace_dir or "", rel), workspace_dir or ".")
+            card = file_card(real, rel) if real else ""
             if card:
                 out.append("\n\n" + card + "\n\n")
     out.append(text[pos:])
     s = "".join(out)
 
     def _file_sub(m):
-        real = os.path.join(workspace_dir or "", m.group(1))
-        c = file_card(real, m.group(1))
+        from file_preview import safe_workspace_path
+        real = safe_workspace_path(os.path.join(workspace_dir or "", m.group(1)), workspace_dir or ".")
+        c = file_card(real, m.group(1)) if real else ""
         return "\n\n" + c + "\n\n" if c else ""
     s = _FILE.sub(_file_sub, s)
 
