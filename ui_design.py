@@ -188,6 +188,7 @@ footer {display:none !important;}
  #composer {padding:8px 10px max(8px, env(safe-area-inset-bottom)); gap:2px;}
  #message-input textarea {height:48px !important; min-height:48px !important; max-height:96px !important;}
  #attachment-row {min-height:0;}
+ #render-notice {display:none;}
 }
 
 '''
