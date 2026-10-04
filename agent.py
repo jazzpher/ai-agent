@@ -1059,6 +1059,7 @@ RULES
         _asked = False
         _verify_rounds = 0
         _stream_retries = 0
+        _empty_retries = 0
         research_request = bool(re.search(
             r"\b(research|deep search|deep web|current|latest|hosting tiers|job market|job (?:search|postings?|openings?)|vacanc\w+|hiring)\b",
             user_message, re.I))
@@ -1111,6 +1112,12 @@ RULES
             )
             if self._thinking_body():
                 kwargs["extra_body"] = self._thinking_body()
+            if _empty_retries and "nemotron" in (self.model or "").lower():
+                # Request public content on recovery, without changing saved settings.
+                kwargs["extra_body"] = {"chat_template_kwargs": {
+                    "enable_thinking": self.enable_thinking,
+                    "force_nonempty_content": True,
+                }}
             if self._ledger is not None and self._ledger.exhausted():
                 # Keep the other tools: a conversation full of tool calls with no tools
                 # makes the model write pseudo tool calls as text, which show up blank.
@@ -1281,10 +1288,30 @@ RULES
                 self.total_completion_tokens += completion_tokens
                 final_text = "".join(content_chunks)
                 if not final_text.strip():
-                    self.errors += 1
-                    self._log("empty_response", reasoning_seen=reasoning_seen)
+                    self._log("empty_response", reasoning_seen=reasoning_seen,
+                              finish_reason=finish_reason, attempt=_empty_retries)
                     full_response = full_response.replace(thinking_msg, "")
-                    full_response += "\n\n⚠️ The model finished without an answer. Try again or choose another model in Settings."
+                    # Only this empty completion is retried. Completed tools and their
+                    # results stay in history; no partial calls or answers are replayed.
+                    if (_empty_retries < 2 and not self.cancel_requested
+                            and time.monotonic() < self._completion_deadline):
+                        _empty_retries += 1
+                        if _empty_retries == 1:
+                            self.messages.append({"role": "user", "content": (
+                                "[The last model response contained no visible answer.] "
+                                "Continue the original task from the tool results already in this "
+                                "conversation. Do not repeat completed actions. If the task is done, "
+                                "give the user a plain-language answer now. If something is missing, "
+                                "use the needed tool or ask a specific question. Do not return an "
+                                "empty response or private reasoning.")})
+                        full_response += (f"\n\n🔁 Model returned no answer; "
+                                          f"recovering ({_empty_retries}/2)…\n\n")
+                        yield full_response
+                        continue
+                    self.errors += 1
+                    full_response += ("\n\n⚠️ The model finished without an answer after two "
+                                      "recovery attempts. Completed work was kept; try again "
+                                      "or choose another model in the chat picker.")
                     yield full_response
                     return
                 if (self._ledger is not None and _pseudo_rounds < 1
