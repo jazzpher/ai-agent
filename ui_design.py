@@ -174,6 +174,22 @@ footer {display:none !important;}
  .empty-chat h1 {font-size:26px;}
 }
 
+/* Mobile: give the conversation the screen. Files and starter prompts live in a collapsed accordion. */
+#extras {border:0 !important; background:transparent !important; box-shadow:none !important;}
+#extras > button, #extras .label-wrap {font-size:12px; color:var(--ws-muted); padding:2px 4px !important; min-height:0 !important;}
+@media (max-width:640px) {
+ .workspace-header {padding:10px 2px 8px;}
+ .brand-mark {width:32px; height:32px;}
+ .brand span:not(.brand-mark) {display:none;}
+ #workspace-tabs > .tab-nav {margin-bottom:8px; padding-bottom:4px;}
+ #chat-workspace {height:calc(100dvh - 156px); min-height:420px;}
+ #conversation-heading {display:none;}
+ #agent-chat {min-height:240px !important;}
+ #composer {padding:8px 10px max(8px, env(safe-area-inset-bottom)); gap:2px;}
+ #message-input textarea {height:48px !important; min-height:48px !important; max-height:96px !important;}
+ #attachment-row {min-height:0;}
+}
+
 '''
 
 
