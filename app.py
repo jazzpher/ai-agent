@@ -622,17 +622,18 @@ def build_app():
                             file_status = gr.Textbox(value="No files uploaded", interactive=False,
                                 show_label=False, scale=4, elem_id="file-status", container=False)
                             clear_btn = gr.Button("New chat", scale=0, elem_id="clear-button")
-                        files_box = gr.File(label="Files in workspace (download)", file_count="multiple",
-                                            interactive=False, elem_id="workspace-files")
-                        refresh_files_btn = gr.Button("Refresh files", scale=0, elem_id="refresh-files")
-                        example_dd = gr.Dropdown(choices=[
-                            "Choose a starter prompt...",
-                            "Help me outline a project plan",
-                            "Gawa ka ng hello.py tapos i-edit mo yung function name",
-                            "I-search mo kung paano gumawa ng FastAPI app, tapos basahin mo yung top result",
-                            "Basahin mo yung uploaded na docx file at i-summarize",
-                        ], show_label=False, label="Try a prompt", value="Choose a starter prompt...",
-                           interactive=True, elem_id="examples", filterable=False)
+                        with gr.Accordion("Files & starter prompts", open=False, elem_id="extras"):
+                            files_box = gr.File(label="Files in workspace (download)", file_count="multiple",
+                                                interactive=False, elem_id="workspace-files")
+                            refresh_files_btn = gr.Button("Refresh files", scale=0, elem_id="refresh-files")
+                            example_dd = gr.Dropdown(choices=[
+                                "Choose a starter prompt...",
+                                "Help me outline a project plan",
+                                "Gawa ka ng hello.py tapos i-edit mo yung function name",
+                                "I-search mo kung paano gumawa ng FastAPI app, tapos basahin mo yung top result",
+                                "Basahin mo yung uploaded na docx file at i-summarize",
+                            ], show_label=False, label="Try a prompt", value="Choose a starter prompt...",
+                               interactive=True, elem_id="examples", filterable=False)
             with gr.Tab("Settings", id="settings"):
                 with gr.Column(elem_id="settings-panel"):
                     gr.Markdown("## Make it yours\nChoose your providers and how your assistant thinks. "
