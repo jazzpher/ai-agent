@@ -57,3 +57,4 @@ class MobileChatHeightTests(unittest.TestCase):
         self.assertIn('#extras', CSS)
         self.assertIn('calc(100dvh - 156px)', CSS)
         self.assertIn('#conversation-heading {display:none;}', CSS)
+        self.assertIn('#render-notice {display:none;}', CSS)
