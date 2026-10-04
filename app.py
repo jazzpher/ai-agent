@@ -256,6 +256,27 @@ def keepalive(gen, interval=None, cancel=None):
         raise
 
 
+def run_with_beats(fn, label, make_update=lambda text: text, interval=None):
+    """Run a slow blocking call (Test, Benchmark, model list) in a worker thread and
+    yield a status line while it works, so the browser connection never sits silent
+    long enough for the host proxy to drop it. Yields make_update(text) values; the
+    last one is the result. Errors become a readable line, never a dropped stream."""
+    start = time.time()
+
+    def work():
+        yield fn()
+
+    try:
+        yield make_update(f"⏳ {label}…")
+        for kind, val in keepalive(work(), interval):
+            if kind == "beat":
+                yield make_update(f"⏳ {label}… {int(time.time() - start)}s")
+            else:
+                yield make_update(val)
+    except Exception as e:  # noqa: BLE001
+        yield make_update(f"❌ {type(e).__name__}: {str(e)[:200]}")
+
+
 def list_workspace_files(agent=None):
     """Files in the workspace, newest first, for the download panel."""
     found = []
@@ -491,32 +512,53 @@ def build_providers_panel():
 
         def _fetch_models(base_url, typed_key, idx):
             k = _saved_key(typed_key, idx)
-            try:
-                ids = list_models(base_url.strip(), k)
-            except Exception as e:
-                return gr.update(), f" Hindi makuha ang models: {type(e).__name__}: {str(e).replace(k, '***')[:200]}"
-            return gr.update(choices=ids), f" {len(ids)} models. Pumili sa dropdown para ilagay sa Model."
+
+            def go():
+                try:
+                    ids = list_models(base_url.strip(), k)
+                except Exception as e:
+                    return gr.update(), f" Hindi makuha ang models: {type(e).__name__}: {str(e).replace(k, '***')[:200]}"
+                return gr.update(choices=ids), f" {len(ids)} models. Pumili sa dropdown para ilagay sa Model."
+
+            for kind, val in keepalive((go() for _ in [0])):
+                if kind == "beat":
+                    yield gr.update(), "⏳ Kinukuha ang models…"
+                else:
+                    yield val
 
         def _benchmark(base_url, model_name, typed_key, idx):
             k = _saved_key(typed_key, idx)
-            try:
-                return format_benchmark(model_name.strip(),
-                                        benchmark_model(base_url.strip(), model_name.strip(), k))
-            except Exception as e:
-                return f" {type(e).__name__}: {str(e).replace(k, '***')[:200]}"
+            def go():
+                try:
+                    return format_benchmark(model_name.strip(),
+                                            benchmark_model(base_url.strip(), model_name.strip(), k))
+                except Exception as e:
+                    return f" {type(e).__name__}: {str(e).replace(k, '***')[:200]}"
+
+            yield from run_with_beats(go, "Benchmark running (5 calls, may take a few minutes)")
 
         def _test(base_url, model_name, typed_key, idx):
             k = typed_key or (load_providers() + [{}] * MAX_SLOTS)[idx].get("api_key", "")
-            return test_connection(base_url.strip(), model_name.strip(), k)
+            yield from run_with_beats(lambda: test_connection(base_url.strip(), model_name.strip(), k),
+                                      "Testing connection")
 
         for i, (preset, base, model, key, hint, on, vision, test_btn, result,
                 fetch_btn, bench_btn, models_dd) in enumerate(slots):
-            test_btn.click(lambda b, m, k, i=i: _test(b, m, k, i), [base, model, key], result,
-                           show_progress="full")
-            fetch_btn.click(lambda b, k, i=i: _fetch_models(b, k, i), [base, key], [models_dd, result],
-                            show_progress="full")
-            bench_btn.click(lambda b, m, k, i=i: _benchmark(b, m, k, i), [base, model, key], result,
-                            show_progress="full")
+            def _bind(i=i):
+                # Real generator functions (not lambdas that return generators), so Gradio streams them.
+                def test_h(b, m, k):
+                    yield from _test(b, m, k, i)
+
+                def fetch_h(b, k):
+                    yield from _fetch_models(b, k, i)
+
+                def bench_h(b, m, k):
+                    yield from _benchmark(b, m, k, i)
+                return test_h, fetch_h, bench_h
+            test_h, fetch_h, bench_h = _bind()
+            test_btn.click(test_h, [base, model, key], result, show_progress="full")
+            fetch_btn.click(fetch_h, [base, key], [models_dd, result], show_progress="full")
+            bench_btn.click(bench_h, [base, model, key], result, show_progress="full")
 
         def _save(*vals):
             old = load_providers() + [{}] * MAX_SLOTS
