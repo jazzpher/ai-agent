@@ -48,6 +48,11 @@ def memory(action: str, text: str = "", session_id: str = None) -> dict:
     return memory_action(MEMORY_FILE, action, text)
 
 
+def ask_user(question: str = "", options=None, session_id: str = None) -> dict:
+    """Show one clarifying question with quick-choice buttons. The turn ends so the user can tap."""
+    return {"status": "success", "output": "Question shown to the user with tap-to-answer choices. Stop now and wait for the answer."}
+
+
 def get_sandbox_status(session_id: str = None) -> dict:
     """Public helper for the UI: describe the current sandbox mode."""
     if session_id:
@@ -1313,6 +1318,27 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_user",
+            "description": (
+                "Ask ONE short clarifying question with 2-4 quick-choice answers, then stop and wait. "
+                "Use it only at the very start of a big or open-ended job (editing a document, building an app, "
+                "making a deliverable) when the answer would change the result and the user did not say "
+                "what they want. Never for simple requests, never twice in a row, never after the user said not to ask."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "One short question, in the user's language."},
+                    "options": {"type": "array", "items": {"type": "string"},
+                                "description": "2-4 short answers the user can tap (each under 40 chars)."},
+                },
+                "required": ["question", "options"],
+            },
+        },
+    },
 ]
 
 
@@ -1335,4 +1361,5 @@ TOOL_FUNCTIONS = {
     "remove_background": remove_background,
     "recall_step": recall_step,
     "memory": memory,
+    "ask_user": ask_user,
 }
