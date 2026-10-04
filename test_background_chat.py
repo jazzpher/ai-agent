@@ -31,7 +31,8 @@ def test_worker_errors_retained_for_reconnect():
     with patch.object(app, 'chat_stream', stream):
         app.begin_background_chat('test', [], [], a)
         time.sleep(.1)
-    assert 'fake failure' in app.poll_background_chat(a)[0][-1]['content']
+    assert 'fake failure' in a._ui_history[-1]['content']
+    assert app.poll_background_chat(a)[0] == app.gr.update()  # unchanged reply does not redraw
 
 
 def test_idle_poll_never_clears_textbox_or_files():
