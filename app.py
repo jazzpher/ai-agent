@@ -17,10 +17,12 @@ from pathlib import Path
 
 import gradio as gr
 
-from ui_design import CSS, HEADER, EMPTY_CHAT, workspace_theme
+from ui_design import CSS, HEADER, EMPTY_CHAT, workspace_theme, PAGE_JS, COPY_JS
 from server_settings import launch_settings
 from agent import AIAgent
 from config import NVIDIA_API_KEY, DEFAULT_MODEL, WORKSPACE_DIR
+import worklog
+import files_tree
 from file_preview import render_preview, safe_workspace_path
 from tools import get_sandbox_status, TOOL_FUNCTIONS
 from sandbox_session import session_manager
@@ -167,10 +169,11 @@ def chat_stream(message: str, history: list, file_paths, agent: AIAgent):
     history[-1]["content"] = "Preparing your request..."
     yield history, format_metrics(agent)
     agent.refresh_providers()  # picks up Settings changes without restart
+    apply_model_choice(agent)
 
     # Stream agent response (with two-pass analyze-then-act)
     for partial in agent.chat_stream(display_message, uploaded_files_info=upload_info):
-        history[-1]["content"] = partial
+        history[-1]["content"] = worklog.render(partial, WORKSPACE_DIR)
         yield history, format_metrics(agent)
 
 
@@ -187,6 +190,7 @@ def clear_chat(agent: AIAgent):
     agent.reset()
     # Create a new agent (new session)
     new_agent = AIAgent()
+    set_model_choice(getattr(agent, "_picked_model", None), new_agent)  # keep the chat picker
     return new_agent, [], "", "No files uploaded", [], format_metrics(new_agent)
 
 
@@ -311,18 +315,73 @@ def refresh_panels(agent):
     return files, status
 
 
-def _file_choices():
+EXTRA_MODELS = ["deepseek-ai/deepseek-v4.1-flash"]  # free NVIDIA endpoint, tested in chat
+
+
+def model_choices():
+    """(label, id) pairs: the models of the enabled providers plus known free NVIDIA extras."""
+    try:
+        from providers import active_providers
+        ids = [p["model"] for p in active_providers()]
+    except Exception:
+        ids = []
+    seen, out = set(), []
+    for mid in ids + EXTRA_MODELS:
+        if mid and mid not in seen:
+            seen.add(mid)
+            out.append((mid.split("/")[-1], mid))
+    return out
+
+
+def apply_model_choice(agent):
+    """Re-apply the chat picker after refresh_providers() resets the model."""
+    choice = getattr(agent, "_picked_model", None)
+    if choice:
+        agent.model = choice
+
+
+def set_model_choice(choice, agent: AIAgent):
+    agent._picked_model = (choice or "").strip() or None
+    if agent._picked_model:
+        agent.model = agent._picked_model
+    return agent
+
+
+def _rel(path):
+    return os.path.relpath(path, WORKSPACE_DIR) if path else None
+
+
+def _sheet(selected_abs=None):
+    """(usage text, tree html) for the Files sheet."""
+    rel = _rel(selected_abs) if selected_abs else None
+    return files_tree.usage_text(WORKSPACE_DIR), files_tree.tree_html(WORKSPACE_DIR, rel)
+
+
+def _newest_file():
     files = list_workspace_files() or []
-    return [(os.path.basename(p), p) for p in files]
+    for ext in (".pdf", ".docx"):
+        for p in files:
+            if p.lower().endswith(ext):
+                return p
+    return files[0] if files else None
 
 
-def open_files_panel(current=None):
-    """Show the Files overlay, refresh the list, and preview the newest (or current) file."""
-    choices = _file_choices()
-    paths = [p for _, p in choices]
-    pick = current if current in paths else (paths[0] if paths else None)
-    return (gr.update(visible=True), gr.update(choices=choices, value=pick),
-            *preview_selected(pick))
+def open_files_panel(current=None, pick=None):
+    """Show the Files sheet, refresh tree + usage, preview the newest (or picked) file.
+    Returns: panel, usage, tree, preview, download, pick, zip button."""
+    cur = safe_workspace_path(os.path.join(WORKSPACE_DIR, pick), WORKSPACE_DIR) if pick else None
+    target = cur or _newest_file()
+    usage, tree = _sheet(target)
+    zpath = files_tree.make_zip(WORKSPACE_DIR)
+    return (gr.update(visible=True), usage, tree, *preview_selected(target),
+            _rel(target) or "", gr.update(value=zpath, visible=bool(zpath)))
+
+
+def pick_file(rel):
+    """User tapped a row in the tree."""
+    real = safe_workspace_path(os.path.join(WORKSPACE_DIR, rel or ""), WORKSPACE_DIR)
+    usage, tree = _sheet(real)
+    return (usage, tree, *preview_selected(real))
 
 
 def preview_selected(path):
@@ -334,6 +393,18 @@ def preview_selected(path):
 
 def close_files_panel():
     return gr.update(visible=False)
+
+
+def auto_open_files(agent):
+    """Timer tick: after a run that made a PDF/docx, open the sheet on it once."""
+    path = getattr(agent, "_ui_autoopen", None)
+    if not path:
+        return tuple(gr.update() for _ in range(7))
+    agent._ui_autoopen = None
+    usage, tree = _sheet(path)
+    zpath = files_tree.make_zip(WORKSPACE_DIR)
+    return (gr.update(visible=True), usage, tree, *preview_selected(path),
+            _rel(path), gr.update(value=zpath, visible=bool(zpath)))
 
 
 def load_files_only(request: gr.Request = None):
@@ -453,6 +524,8 @@ def begin_background_chat(message, history, file_paths, agent):
     if not message.strip() and not file_paths:
         return poll_background_chat(agent)
     agent._ui_running = True
+    _before = files_tree.scan(WORKSPACE_DIR)
+    _before_map = {r: (sz, mt) for r, sz, mt in _before}
     agent._ui_history = list(history or [])
     agent._ui_started = time.monotonic()
     agent.cancel_requested = False
@@ -467,6 +540,14 @@ def begin_background_chat(message, history, file_paths, agent):
                 {"role": "assistant", "content": "Run failed: " + type(error).__name__ + ": " + str(error)[:300]}]
         finally:
             agent._ui_running = False
+            try:
+                fresh = [(mt, r) for r, sz, mt in files_tree.scan(WORKSPACE_DIR)
+                         if _before_map.get(r) != (sz, mt) and r.lower().endswith((".pdf", ".docx"))]
+                if fresh:
+                    pdfs = [x for x in fresh if x[1].lower().endswith(".pdf")]
+                    agent._ui_autoopen = os.path.join(WORKSPACE_DIR, max(pdfs or fresh)[1])
+            except Exception:
+                pass
     threading.Thread(target=work, daemon=True).start()
     out = list(poll_background_chat(agent))
     # Clear the textbox / attachments once, at submit time (not from the poll).
@@ -615,8 +696,9 @@ def build_providers_panel():
 
 def build_app():
     theme = workspace_theme()
-    with gr.Blocks(title="AI Agent | Your workspace", theme=theme, css=CSS) as app:
+    with gr.Blocks(title="AI Agent | Your workspace", theme=theme, css=CSS, js=PAGE_JS) as app:
         gr.HTML(HEADER)
+        folder_btn = gr.Button("\U0001F4C1", elem_id="folder-fab", scale=0, size="sm")
         if os.environ.get("RENDER", "").lower() == "true":
             gr.Markdown("Render free: local keys, memory and files may disappear on restart. "
                         "Tools use a venv, not Docker isolation. Use only your own login.",
@@ -636,6 +718,10 @@ def build_app():
                         placeholder=EMPTY_CHAT,
                     )
                     with gr.Column(elem_id="composer"):
+                        model_dd = gr.Dropdown(choices=model_choices(), value=(model_choices() or [(None, None)])[0][1],
+                                               label="Model", allow_custom_value=True, filterable=False,
+                                               elem_id="model-picker", container=False,
+                                               info=None)
                         with gr.Row(elem_id="compose-row"):
                             msg = gr.Textbox(placeholder="Ask or create...", show_label=False,
                                              lines=1, max_lines=5, scale=5, container=False,
@@ -684,12 +770,19 @@ def build_app():
                                     "Docker provides stronger isolation.\n\n" + approval_warning())
 
         with gr.Column(visible=False, elem_id="files-panel") as files_panel:
+            gr.HTML('<div class="sheet-grip"></div>', elem_id="files-grip")
             with gr.Row(elem_id="files-panel-head"):
-                gr.Markdown("**Files**", elem_id="files-panel-title")
+                with gr.Column(scale=3, min_width=120):
+                    gr.Markdown("**Workspace**", elem_id="files-panel-title")
+                    files_usage = gr.Markdown("", elem_id="files-usage")
+                files_zip = gr.DownloadButton("Download all", size="sm", scale=0, visible=False,
+                                              elem_id="files-zip")
                 files_close_btn = gr.Button("Close", size="sm", scale=0, elem_id="files-close")
-            files_dd = gr.Dropdown(choices=[], value=None, label="File", interactive=True,
-                                   filterable=False, elem_id="files-select")
-            files_download = gr.DownloadButton("Download", visible=False, size="sm", elem_id="files-download")
+            files_tree_html = gr.HTML("", elem_id="files-tree")
+            files_pick = gr.Textbox(value="", elem_id="files-pick", show_label=False, container=False)
+            with gr.Row(elem_id="files-actions"):
+                files_copy = gr.Button("Copy", size="sm", scale=0, elem_id="files-copy")
+                files_download = gr.DownloadButton("Download", visible=False, size="sm", scale=0, elem_id="files-download")
             files_preview = gr.HTML(render_preview(None), elem_id="files-preview")
 
         # ============================================================
@@ -703,6 +796,8 @@ def build_app():
             return agent
         thinking_checkbox.change(set_thinking, inputs=[thinking_checkbox, agent_state],
                                  outputs=[agent_state], queue=False)
+
+        model_dd.change(set_model_choice, inputs=[model_dd, agent_state], outputs=[agent_state], queue=False)
 
         # Upload handler
         upload_btn.upload(
@@ -735,10 +830,17 @@ def build_app():
                show_progress="hidden")
         # Also usable after a dropped connection ("Reconnected"): reload the panels on demand.
         refresh_files_btn.click(refresh_panels, inputs=[agent_state], outputs=[files_box, sandbox_md])
-        files_btn.click(open_files_panel, inputs=[files_dd],
-                        outputs=[files_panel, files_dd, files_preview, files_download], queue=False)
-        files_dd.input(preview_selected, inputs=[files_dd], outputs=[files_preview, files_download])
+        sheet_outputs = [files_panel, files_usage, files_tree_html, files_preview, files_download,
+                         files_pick, files_zip]
+        files_btn.click(open_files_panel, inputs=None, outputs=sheet_outputs, queue=False)
+        folder_btn.click(open_files_panel, inputs=None, outputs=sheet_outputs, queue=False)
+        files_pick.input(pick_file, inputs=[files_pick],
+                         outputs=[files_usage, files_tree_html, files_preview, files_download], queue=False)
         files_close_btn.click(close_files_panel, outputs=[files_panel], queue=False)
+        files_copy.click(None, js=COPY_JS)
+        open_timer = gr.Timer(2.0)
+        open_timer.tick(auto_open_files, inputs=[agent_state], outputs=sheet_outputs,
+                        queue=False, show_progress="hidden")
         app.load(load_files_only, inputs=None, outputs=[files_box])
         chat_timer = gr.Timer(3.0)
         chat_timer.tick(poll_background_chat, inputs=[agent_state], outputs=chat_outputs,
