@@ -366,6 +366,25 @@ def _newest_file():
     return files[0] if files else None
 
 
+def open_artifact(rel):
+    real = safe_workspace_path(os.path.join(WORKSPACE_DIR, rel or ""), WORKSPACE_DIR)
+    if not real:
+        return (gr.update(visible=False), "", render_preview(None), gr.update(visible=False))
+    return (gr.update(visible=True), os.path.relpath(real, WORKSPACE_DIR), render_preview(real),
+            gr.update(value=real, visible=True))
+
+
+def live_workspace(agent, selected):
+    if not getattr(agent, "_ui_running", False):
+        return (gr.update(), gr.update())
+    signature = tuple(files_tree.scan(WORKSPACE_DIR))
+    if signature == getattr(agent, "_ui_tree_signature", None):
+        return (gr.update(), gr.update())
+    agent._ui_tree_signature = signature
+    real = safe_workspace_path(os.path.join(WORKSPACE_DIR, selected or ""), WORKSPACE_DIR)
+    return _sheet(real)
+
+
 def open_files_panel(current=None, pick=None):
     """Show the Files sheet, refresh tree + usage, preview the newest (or picked) file.
     Returns: panel, usage, tree, preview, download, pick, zip button."""
@@ -542,7 +561,7 @@ def begin_background_chat(message, history, file_paths, agent):
             agent._ui_running = False
             try:
                 fresh = [(mt, r) for r, sz, mt in files_tree.scan(WORKSPACE_DIR)
-                         if _before_map.get(r) != (sz, mt) and r.lower().endswith((".pdf", ".docx"))]
+                         if _before_map.get(r) != (sz, mt) and r.lower().endswith((".pdf", ".docx", ".html", ".htm"))]
                 if fresh:
                     pdfs = [x for x in fresh if x[1].lower().endswith(".pdf")]
                     agent._ui_autoopen = os.path.join(WORKSPACE_DIR, max(pdfs or fresh)[1])
@@ -567,7 +586,11 @@ def poll_background_chat(agent):
     if running and shown and shown[-1].get("role") == "assistant":
         elapsed = int(time.monotonic() - agent._ui_started)
         shown[-1]["content"] += f"\n\n⏳ Running... {elapsed}s"
-    return (shown, getattr(agent, "_ui_metrics", gr.update()),
+    # Do not replace the whole chat DOM on quiet polls: preserve open log rows/iframe scroll.
+    signature = (running, history, getattr(agent, "_ui_metrics", None))
+    changed = signature != getattr(agent, "_ui_poll_signature", None)
+    agent._ui_poll_signature = signature
+    return (shown if changed else gr.update(), getattr(agent, "_ui_metrics", gr.update()) if changed else gr.update(),
             gr.update(visible=not running, interactive=not running),
             gr.update(visible=running, interactive=running, value="Stop"),
             # Never touch file_status / uploaded_files / msg from the 3 s poll: resetting
@@ -785,6 +808,14 @@ def build_app():
                 files_download = gr.DownloadButton("Download", visible=False, size="sm", scale=0, elem_id="files-download")
             files_preview = gr.HTML(render_preview(None), elem_id="files-preview")
 
+        with gr.Column(visible=False, elem_id="artifact-viewer") as artifact_viewer:
+            with gr.Row(elem_id="artifact-toolbar"):
+                artifact_title = gr.Markdown("", elem_id="artifact-title")
+                artifact_download = gr.DownloadButton("Download", visible=False, scale=0)
+                artifact_close = gr.Button("Close", scale=0, elem_id="artifact-close")
+            artifact_body = gr.HTML("", elem_id="artifact-body")
+        artifact_pick = gr.Textbox(value="", elem_id="artifact-pick", show_label=False, container=False)
+
         # ============================================================
         # EVENT WIRING
         # ============================================================
@@ -842,7 +873,12 @@ def build_app():
         open_timer.tick(auto_open_files, inputs=[agent_state], outputs=sheet_outputs,
                         queue=False, show_progress="hidden")
         app.load(load_files_only, inputs=None, outputs=[files_box])
-        chat_timer = gr.Timer(3.0)
+        artifact_pick.input(open_artifact, inputs=[artifact_pick],
+                            outputs=[artifact_viewer, artifact_title, artifact_body, artifact_download], queue=False)
+        artifact_close.click(lambda: gr.update(visible=False), outputs=[artifact_viewer], queue=False)
+        open_timer.tick(live_workspace, inputs=[agent_state, files_pick], outputs=[files_usage, files_tree_html],
+                        queue=False, show_progress="hidden")
+        chat_timer = gr.Timer(1.5)
         chat_timer.tick(poll_background_chat, inputs=[agent_state], outputs=chat_outputs,
                         queue=False, show_progress="hidden")
 
