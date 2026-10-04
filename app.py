@@ -21,6 +21,7 @@ from ui_design import CSS, HEADER, EMPTY_CHAT, workspace_theme
 from server_settings import launch_settings
 from agent import AIAgent
 from config import NVIDIA_API_KEY, DEFAULT_MODEL, WORKSPACE_DIR
+from file_preview import render_preview, safe_workspace_path
 from tools import get_sandbox_status, TOOL_FUNCTIONS
 from sandbox_session import session_manager
 from approvals import gate as approval_gate, approval_mode
@@ -308,6 +309,31 @@ def refresh_panels(agent):
     except Exception:
         status = gr.update()
     return files, status
+
+
+def _file_choices():
+    files = list_workspace_files() or []
+    return [(os.path.basename(p), p) for p in files]
+
+
+def open_files_panel(current=None):
+    """Show the Files overlay, refresh the list, and preview the newest (or current) file."""
+    choices = _file_choices()
+    paths = [p for _, p in choices]
+    pick = current if current in paths else (paths[0] if paths else None)
+    return (gr.update(visible=True), gr.update(choices=choices, value=pick),
+            *preview_selected(pick))
+
+
+def preview_selected(path):
+    real = safe_workspace_path(path, WORKSPACE_DIR)
+    if not real:
+        return render_preview(None), gr.update(value=None, visible=False)
+    return render_preview(real), gr.update(value=real, visible=True)
+
+
+def close_files_panel():
+    return gr.update(visible=False)
 
 
 def load_files_only(request: gr.Request = None):
@@ -611,10 +637,11 @@ def build_app():
                     )
                     with gr.Column(elem_id="composer"):
                         with gr.Row(elem_id="compose-row"):
-                            msg = gr.Textbox(placeholder="Ask, create, or explore...", show_label=False,
+                            msg = gr.Textbox(placeholder="Ask or create...", show_label=False,
                                              lines=1, max_lines=5, scale=5, container=False,
                                              elem_id="message-input")
                             send_btn = gr.Button("Send", variant="primary", scale=0, elem_id="send-button")
+                            files_btn = gr.Button("Files", variant="secondary", scale=0, elem_id="files-button")
                             stop_btn = gr.Button("Stop", variant="stop", scale=0, visible=False, elem_id="stop-button")
                         with gr.Row(elem_id="attachment-row"):
                             upload_btn = gr.UploadButton("Attach files", file_count="multiple",
@@ -655,6 +682,15 @@ def build_app():
                                     "**Temporary sandbox:** installed packages are session-only. A venv isolates "
                                     "packages, not files or secrets; commands can modify this server. "
                                     "Docker provides stronger isolation.\n\n" + approval_warning())
+
+        with gr.Column(visible=False, elem_id="files-panel") as files_panel:
+            with gr.Row(elem_id="files-panel-head"):
+                gr.Markdown("**Files**", elem_id="files-panel-title")
+                files_close_btn = gr.Button("Close", size="sm", scale=0, elem_id="files-close")
+            files_dd = gr.Dropdown(choices=[], value=None, label="File", interactive=True,
+                                   filterable=False, elem_id="files-select")
+            files_download = gr.DownloadButton("Download", visible=False, size="sm", elem_id="files-download")
+            files_preview = gr.HTML(render_preview(None), elem_id="files-preview")
 
         # ============================================================
         # EVENT WIRING
@@ -699,6 +735,10 @@ def build_app():
                show_progress="hidden")
         # Also usable after a dropped connection ("Reconnected"): reload the panels on demand.
         refresh_files_btn.click(refresh_panels, inputs=[agent_state], outputs=[files_box, sandbox_md])
+        files_btn.click(open_files_panel, inputs=[files_dd],
+                        outputs=[files_panel, files_dd, files_preview, files_download], queue=False)
+        files_dd.input(preview_selected, inputs=[files_dd], outputs=[files_preview, files_download])
+        files_close_btn.click(close_files_panel, outputs=[files_panel], queue=False)
         app.load(load_files_only, inputs=None, outputs=[files_box])
         chat_timer = gr.Timer(3.0)
         chat_timer.tick(poll_background_chat, inputs=[agent_state], outputs=chat_outputs,
