@@ -14,6 +14,7 @@ Output format (rendered as Markdown in the chat):
     ────────────────────────────────
     <final response text>
 """
+import thinking
 import json
 import os
 import re
@@ -990,6 +991,7 @@ RULES
 
         self.cancel_requested = False
         self._plan_steps = []
+        thinking.reset(self)
 
         # ALWAYS trim at the start of every turn so we don't accumulate
         # infinite tool-call messages from previous turns.
@@ -1219,11 +1221,19 @@ RULES
                     delta = chunk.choices[0].delta
                     finish_reason = chunk.choices[0].finish_reason
 
-                    if delta and getattr(delta, "reasoning_content", None) and not reasoning_seen:
+                    _rc = getattr(delta, "reasoning_content", None) if delta else None
+                    if _rc:
+                        thinking.add(self, _rc)  # display only, never in self.messages
+                    if _rc and not reasoning_seen:
                         reasoning_seen = True
                         self._log("reasoning_started")
                         _last_ui = time.monotonic()
                         yield full_response.replace(thinking_msg, "\n\n⏳ Model is thinking; waiting for answer…\n\n")
+                    elif _rc and time.monotonic() - _last_ui >= 1.0:
+                        _last_ui = time.monotonic()
+                        yield full_response.replace(thinking_msg, "\n\n⏳ Model is thinking; waiting for answer…\n\n")
+                    if delta and (delta.content or delta.tool_calls):
+                        thinking.finish(self)
                     if delta and delta.content:
                         full_response = full_response.replace(thinking_msg, "\n\n---\n\n")
                         content_chunks.append(delta.content)
@@ -1281,6 +1291,7 @@ RULES
             if any(t.get("name") in ("web_search", "job_search") for t in tool_calls_data.values()):
                 research_search_done = True
             _stream_retries = 0
+            thinking.finish(self)
             if content_chunks:
                 yield full_response  # flush text withheld by the throttle
             completion_tokens = sum(_count_tokens(c) for c in content_chunks)

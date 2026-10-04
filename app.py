@@ -21,6 +21,7 @@ from ui_design import CSS, HEADER, EMPTY_CHAT, workspace_theme, PAGE_JS, COPY_JS
 from server_settings import launch_settings
 from agent import AIAgent
 from config import NVIDIA_API_KEY, DEFAULT_MODEL, WORKSPACE_DIR
+import thinking
 import worklog
 import files_tree
 from file_preview import render_preview, safe_workspace_path
@@ -173,7 +174,7 @@ def chat_stream(message: str, history: list, file_paths, agent: AIAgent):
 
     # Stream agent response (with two-pass analyze-then-act)
     for partial in agent.chat_stream(display_message, uploaded_files_info=upload_info):
-        history[-1]["content"] = worklog.render(partial, WORKSPACE_DIR)
+        history[-1]["content"] = thinking.render(agent) + worklog.render(partial, WORKSPACE_DIR)
         yield history, format_metrics(agent)
 
 

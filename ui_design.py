@@ -227,6 +227,8 @@ footer {display:none !important;}
 .wl-row.bad code {color:#b3261e;}
 .wl-row code {font-size:12px;}
 .wl-s {flex-basis:100%; color:var(--ws-muted); font-size:12px; overflow-wrap:anywhere;}
+.think-body {padding:8px 12px 10px; border-top:1px solid var(--ws-line); color:var(--ws-muted); font-size:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; max-height:220px; overflow:auto;}
+.think-live > summary {font-style:italic;}
 .wl-run {color:var(--ws-muted); font-size:13px; padding:4px 2px;}
 .fc-tag {white-space:nowrap; flex:none; font-size:10px; font-weight:700; letter-spacing:.04em; border:1px solid var(--ws-line); border-radius:6px; padding:2px 6px; color:var(--ws-muted);}
 .fc-name {font-weight:600; overflow-wrap:anywhere;}
