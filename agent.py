@@ -51,6 +51,7 @@ from sandbox_session import session_manager
 from context_manager import ContextManager
 from vision import image_data_uri, strip_old_images
 from approvals import gate as approval_gate, needs_approval
+import agentic
 
 MAX_VERIFY_ROUNDS = 1
 
@@ -409,6 +410,7 @@ When you need a package that isn't pre-installed, just `pip_install` it — the 
 Your tool outputs are **offloaded to files** to save context space. You see compact summaries in context, but full details are saved.
 
 **When you need full details of a past step:**
+- Use `memory(action="add", text=...)` to save a durable user preference or lesson (never secrets); saved facts return in later chats.
 - Use `recall_step(step_id)` to read the full output of any step
 - Step IDs are shown in the summaries: "Step 3: write_file — OK [→ step_003.md]"
 
@@ -763,7 +765,10 @@ RULES
             {"role": "system", "content": self._VERIFY_SYSTEM},
             {"role": "user", "content": (
                 f"**User goal:** {goal}\n\n**Tool evidence (latest):**\n{evidence[:4500]}\n\n"
-                f"**Final answer:**\n{answer[:2000]}"
+                + (f"**Plan the agent made (each step should be done or clearly explained):**\n"
+                   f"{agentic.plan_checklist(getattr(self, '_plan_steps', []))}\n\n"
+                   if getattr(self, "_plan_steps", None) else "")
+                + f"**Final answer:**\n{answer[:2000]}"
             )},
         ]
         try:
@@ -982,6 +987,7 @@ RULES
             return
 
         self.cancel_requested = False
+        self._plan_steps = []
 
         # ALWAYS trim at the start of every turn so we don't accumulate
         # infinite tool-call messages from previous turns.
@@ -1031,6 +1037,7 @@ RULES
             )
             yield full_response
 
+            self._plan_steps = agentic.parse_plan(analysis)
             # Inject the analysis into the main message stream as a hint
             augmented_user_message = (
                 user_message
