@@ -1246,6 +1246,11 @@ RULES
                                     tool_calls_data[idx]["name"] = tcd.function.name
                                 if tcd.function.arguments:
                                     tool_calls_data[idx]["arguments"] += tcd.function.arguments
+                        if time.monotonic() - _last_ui >= 0.3:
+                            activity = worklog.writing_activity(tool_calls_data)
+                            if activity:
+                                _last_ui = time.monotonic()
+                                yield full_response + activity
             except CompletionCancelled:
                 full_response += "\n\n⏹️ Operation cancelled by user."
                 yield full_response
@@ -1514,6 +1519,7 @@ RULES
                     str(result.get("output", "") if isinstance(result, dict) else result)[:800] + _arg_head,
                 ))
                 full_response += f"{badge} `{tool_name}` — {elapsed:.2f}s — {summary}\n"
+                full_response += worklog.tool_detail(args, result)
                 try:
                     _snap_now = _workspace_snapshot()
                     _prev = getattr(self, "_step_snap", None) or {}
