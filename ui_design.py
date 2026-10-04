@@ -215,7 +215,102 @@ footer {display:none !important;}
  #files-button {width:65px; min-width:65px !important;}
 }
 
+/* Work log, file cards, quick-choice chips */
+.wl, .fc {border:1px solid var(--ws-line); border-radius:10px; margin:6px 0; background:var(--ws-panel); font-size:13px;}
+.wl > summary, .fc > summary {cursor:pointer; padding:9px 12px; display:flex; align-items:center; gap:8px; list-style:none; min-height:36px;}
+.wl > summary::-webkit-details-marker, .fc > summary::-webkit-details-marker {display:none;}
+.wl > summary::before {content:"\\203A"; color:var(--ws-muted); transition:transform .15s;}
+.wl[open] > summary::before {transform:rotate(90deg);}
+.wl-i {color:var(--ws-muted); font-family:ui-monospace,monospace; font-size:12px;}
+.wl-t {margin-left:auto; color:var(--ws-muted); font-size:12px; font-variant-numeric:tabular-nums;}
+.wl-row {padding:6px 12px 8px; border-top:1px solid var(--ws-line); display:flex; flex-wrap:wrap; gap:4px 8px; align-items:baseline;}
+.wl-row.bad code {color:#b3261e;}
+.wl-row code {font-size:12px;}
+.wl-s {flex-basis:100%; color:var(--ws-muted); font-size:12px; overflow-wrap:anywhere;}
+.wl-run {color:var(--ws-muted); font-size:13px; padding:4px 2px;}
+.fc-tag {white-space:nowrap; flex:none; font-size:10px; font-weight:700; letter-spacing:.04em; border:1px solid var(--ws-line); border-radius:6px; padding:2px 6px; color:var(--ws-muted);}
+.fc-name {font-weight:600; overflow-wrap:anywhere;}
+.fc-bin {padding:9px 12px; display:flex; flex-wrap:wrap; gap:6px 8px; align-items:center;}
+.fc-pre {margin:0; padding:10px 12px; border-top:1px solid var(--ws-line); font-size:12px; line-height:1.5; max-height:240px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere;}
+.fc-more {padding:0 12px 9px; color:var(--ws-muted); font-size:12px; flex-basis:100%;}
+.qa {border:1px solid var(--ws-line); border-radius:12px; padding:12px; margin:8px 0; background:var(--ws-panel);}
+.qa-q {font-weight:600; margin-bottom:10px;}
+.qa-c {display:flex; flex-wrap:wrap; gap:8px;}
+.qc {min-height:44px; padding:8px 14px; border-radius:999px; border:1px solid var(--ws-line); background:transparent; color:inherit; font:inherit; cursor:pointer;}
+.qc:active {opacity:.6;}
+
+#model-picker {max-width:100%; margin:0 0 4px;}
+#model-picker {padding:0 !important;}
+#model-picker .wrap, #model-picker input {font-size:13px !important; min-height:34px !important; height:34px;}
+#model-picker > div {padding:0 !important;}
+.fc .wl-t {white-space:nowrap;}
+
+/* Folder button, top right */
+#folder-fab {position:fixed !important; top:max(10px, env(safe-area-inset-top)); right:12px; z-index:900; width:44px !important; min-width:44px !important; height:44px; padding:0 !important; border-radius:12px; font-size:0; background:var(--ws-panel) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='%23556' stroke-width='1.8' stroke-linejoin='round'><path d='M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'/></svg>") center/22px no-repeat;}
+#files-pick {position:absolute !important; width:1px; height:1px; overflow:hidden; opacity:0; pointer-events:none;}
+#files-button {display:none !important;}
+
+/* Files sheet: bottom sheet on phones, full height panel elsewhere */
+#files-panel {inset:auto 0 0 0 !important; top:auto !important; height:84dvh; border-radius:18px 18px 0 0; box-shadow:0 -100vh 0 100vh rgba(0,0,0,.45); border:1px solid var(--ws-line);}
+@media (min-width:641px) {#files-panel {left:auto !important; width:440px; top:0 !important; height:100dvh; border-radius:0; box-shadow:-8px 0 30px rgba(0,0,0,.25);}}
+.sheet-grip {width:40px; height:4px; border-radius:2px; background:var(--ws-line); margin:0 auto;}
+#files-usage {color:var(--ws-muted); font-size:12px; margin:0;}
+#files-panel-head {gap:6px !important; flex-wrap:nowrap !important;}
+#files-panel-head > div {min-width:0 !important;}
+#files-zip, #files-close {min-height:38px !important; height:38px; flex:none !important; width:auto !important; min-width:0 !important; padding:0 12px !important; font-size:13px !important;}
+#files-usage, #files-usage p {white-space:nowrap; font-size:11px !important; margin:0 !important;}
+#files-actions button, #files-copy, #files-download {min-height:36px !important; height:36px; flex:none !important; width:auto !important; min-width:90px !important;}
+#files-actions {flex:none; gap:8px;}
+#files-tree {flex:none; max-height:34dvh; overflow:auto; border:1px solid var(--ws-line); border-radius:12px; background:var(--ws-panel);}
+.ft {padding:4px;}
+.ft-dir > summary {cursor:pointer; padding:10px 10px; font-weight:600; font-size:14px;}
+.ft-row {display:flex; width:100%; align-items:center; gap:10px; background:transparent; border:0; color:inherit; font:inherit; padding:11px 10px; min-height:44px; border-radius:8px; text-align:left; cursor:pointer;}
+.ft-row.d1 {padding-left:26px;}
+.ft-row.sel {background:rgba(127,127,127,.18);}
+.ft-n {flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.ft-s {color:var(--ws-muted); font-size:11px;}
+.ft-ic {font-size:9px; font-weight:700; min-width:34px; text-align:center; border-radius:5px; padding:3px 0; color:#fff; background:#6b7a73;}
+.ft-ic.py {background:#3572a5;} .ft-ic.js {background:#b8860b;} .ft-ic.tb {background:#2e7d4f;} .ft-ic.pd {background:#b3261e;} .ft-ic.dc {background:#2b5fb4;} .ft-ic.zp {background:#7a5c2e;}
+.ft-empty {padding:16px; color:var(--ws-muted); font-size:13px;}
+
 '''
+
+
+# One delegated click handler: file rows open a preview, choice chips send the answer.
+PAGE_JS = """
+() => {
+  if (window.__agentUiBound) return;
+  window.__agentUiBound = true;
+  const setVal = (root, v) => {
+    const el = root && root.querySelector('textarea, input');
+    if (!el) return false;
+    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+    el.dispatchEvent(new Event('input', {bubbles: true}));
+    return true;
+  };
+  document.addEventListener('click', (e) => {
+    const row = e.target.closest('[data-fpath]');
+    if (row) { setVal(document.getElementById('files-pick'), row.getAttribute('data-fpath')); return; }
+    const chip = e.target.closest('.qc');
+    if (chip) {
+      const msgs = document.querySelectorAll('#agent-chat .qa');
+      if (msgs.length && !msgs[msgs.length - 1].contains(chip)) return;
+      if (setVal(document.getElementById('message-input'), chip.textContent.trim())) {
+        setTimeout(() => { const b = document.querySelector('#send-button'); if (b) b.click(); }, 80);
+      }
+    }
+  });
+}
+"""
+
+COPY_JS = """
+() => {
+  const el = document.querySelector('#files-preview .fp-text, #files-preview .fp-doc, #files-preview .fp-body');
+  const text = el ? el.innerText : '';
+  if (text && navigator.clipboard) navigator.clipboard.writeText(text);
+}
+"""
 
 
 def workspace_theme():
