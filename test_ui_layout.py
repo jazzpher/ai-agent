@@ -49,3 +49,11 @@ class FilesPanelTest(unittest.TestCase):
             open(a, "w").write("1"); time.sleep(0.02); open(b, "w").write("2")
             os.utime(a, (1, 1))
             self.assertEqual(app_mod.list_workspace_files(), [b, a])
+
+
+class MobileChatHeightTests(unittest.TestCase):
+    def test_mobile_chat_gets_more_height_and_extras_collapse(self):
+        from ui_design import CSS
+        self.assertIn('#extras', CSS)
+        self.assertIn('calc(100dvh - 156px)', CSS)
+        self.assertIn('#conversation-heading {display:none;}', CSS)
