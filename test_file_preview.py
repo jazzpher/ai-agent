@@ -61,15 +61,19 @@ class RenderPreviewTest(unittest.TestCase):
 class FilesPanelWiringTest(unittest.TestCase):
     def test_button_and_panel_exist_and_open_lists_files(self):
         ids = {c["props"].get("elem_id") for c in app.build_app().get_config_file()["components"]}
-        for n in ("files-button", "files-panel", "files-select", "files-download", "files-preview", "files-close"):
+        for n in ("folder-fab", "files-panel", "files-tree", "files-pick", "files-download", "files-zip",
+                  "files-preview", "files-close", "files-usage"):
             self.assertIn(n, ids)
         from unittest.mock import patch
         d = tempfile.mkdtemp(); p = os.path.join(d, "n.txt"); open(p, "w").write("hola")
         with patch.object(app, "WORKSPACE_DIR", d):
-            panel, dd, html_out, dl = app.open_files_panel(None)
-            self.assertTrue(panel["visible"]); self.assertEqual(dd["value"], p)
+            panel, usage, tree, html_out, dl, pick, zp = app.open_files_panel()
+            self.assertTrue(panel["visible"]); self.assertEqual(pick, "n.txt")
             self.assertIn("hola", html_out); self.assertEqual(dl["value"], os.path.realpath(p))
+            self.assertIn('data-fpath="n.txt"', tree); self.assertIn("1 files", usage)
+            self.assertTrue(zp["visible"])
             self.assertIn("Pick a file", app.preview_selected("/etc/passwd")[0])
+            self.assertIn("Pick a file", app.pick_file("../../etc/passwd")[2])
 
     def test_css_has_overlay_and_keeps_mobile_layout(self):
         self.assertIn("#files-panel", CSS); self.assertIn("calc(100dvh - 156px)", CSS)
