@@ -442,7 +442,12 @@ def begin_background_chat(message, history, file_paths, agent):
         finally:
             agent._ui_running = False
     threading.Thread(target=work, daemon=True).start()
-    return poll_background_chat(agent)
+    out = list(poll_background_chat(agent))
+    # Clear the textbox / attachments once, at submit time (not from the poll).
+    out[4] = gr.update(value="No files uploaded")
+    out[5] = []
+    out[6] = gr.update(value="")
+    return tuple(out)
 
 
 def poll_background_chat(agent):
@@ -458,9 +463,9 @@ def poll_background_chat(agent):
     return (shown, getattr(agent, "_ui_metrics", gr.update()),
             gr.update(visible=not running, interactive=not running),
             gr.update(visible=running, interactive=running, value="Stop"),
-            gr.update() if running else gr.update(value="No files uploaded"),
-            gr.update() if running else [],
-            gr.update() if running else gr.update(value=""), gr.update())
+            # Never touch file_status / uploaded_files / msg from the 3 s poll: resetting
+            # them while idle wiped what the user was typing or attaching.
+            gr.update(), gr.update(), gr.update(), gr.update())
 
 
 # ============================================================
