@@ -98,6 +98,7 @@ class StatusTest(unittest.TestCase):
             outputs = list(a.chat_stream("hello"))
             self.assertIn("finished without an answer", outputs[-1])
             self.assertEqual(a.messages[-1]["role"], "user")
+            self.assertEqual(sum("last model response" in str(m.get("content")) for m in a.messages), 1)
             self.assertNotIn("PRIVATE", "".join(outputs))
 
     def test_midstream_failure_not_replayed(self):
@@ -188,3 +189,51 @@ class LazySandboxUITest(unittest.TestCase):
              patch.object(app, "chat_stream", return_value=iter([(completed, "metrics")])):
             output = list(app.start_chat("hello", [], [], a))
             self.assertEqual(output[-1][0], completed)
+
+class EmptyRecoveryTest(unittest.TestCase):
+    def tearDown(self):
+        patch.stopall()
+
+    def drive(self, steps, tool=False):
+        client = FakeClient([])
+        responses = iter(steps)
+        def create(**kw):
+            client.calls.append(kw.copy())
+            return next(responses)
+        client.chat.completions.create = create
+        a = make_agent(client)
+        a._execute_tool = Mock(return_value={"status": "success", "output": "saved"})
+        a._approval_prompt = Mock(return_value=None)
+        with patch.dict("os.environ", {"AGENT_VERIFY": "off"}):
+            out = run(a, "hello")
+        return a, client, out
+
+    def test_empty_after_tool_recovers_without_replaying_action(self):
+        a, c, out = self.drive([
+            stream_chunks(("tool", "view_file", {"path": "sample.txt"})),
+            iter([]), stream_chunks(("text", "The file says hello."))])
+        self.assertIn("The file says hello.", out)
+        self.assertNotIn("finished without", out)
+        a._execute_tool.assert_called_once()
+        self.assertEqual(len([m for m in a.messages if m["role"] == "tool"]), 1)
+        self.assertTrue(c.calls[-1]["extra_body"]["chat_template_kwargs"]["force_nonempty_content"])
+
+    def test_reasoning_only_recovers_without_disclosure(self):
+        a, c, out = self.drive([iter([chunk(reasoning="PRIVATE")]),
+                                stream_chunks(("text", "Hello"))])
+        self.assertIn("Hello", out)
+        self.assertNotIn("PRIVATE", out)
+        self.assertEqual(len(c.calls), 2)
+
+    def test_repeated_whitespace_is_bounded(self):
+        a, c, out = self.drive([iter([chunk(content="  ")]) for _ in range(3)])
+        self.assertIn("after two recovery attempts", out)
+        self.assertEqual(len(c.calls), 3)
+        a._execute_tool.assert_not_called()
+
+    def test_recovery_can_request_next_tool(self):
+        a, c, out = self.drive([iter([]),
+            stream_chunks(("tool", "view_file", {"path": "sample.txt"})),
+            stream_chunks(("text", "Read the file."))])
+        self.assertIn("Read the file.", out)
+        a._execute_tool.assert_called_once()
