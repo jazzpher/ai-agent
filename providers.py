@@ -23,7 +23,7 @@ PRESETS = {
     "NVIDIA NIM": (NVIDIA_BASE_URL, DEFAULT_MODEL),
     "Groq": ("https://api.groq.com/openai/v1", "openai/gpt-oss-120b"),
     "Gemini": ("https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-2.5-flash"),
-    "OpenRouter": ("https://openrouter.ai/api/v1", "openai/gpt-oss-120b:free"),
+    "OpenRouter": ("https://openrouter.ai/api/v1", "nvidia/nemotron-3-ultra-550b-a55b:free"),
     "Custom": ("", ""),
 }
 
