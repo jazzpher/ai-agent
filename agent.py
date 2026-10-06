@@ -237,6 +237,14 @@ class AIAgent:
     # ===========================================================
 
     def _load_memory(self):
+        try:
+            from agentic import _read
+            lines = _read(MEMORY_FILE)  # database first, file fallback
+            if lines:
+                self._memory_text = "\n".join(lines).strip()
+                return
+        except Exception:
+            pass
         if os.path.exists(MEMORY_FILE):
             try:
                 with open(MEMORY_FILE, "r", encoding="utf-8") as f:
@@ -265,6 +273,7 @@ The user owns this agent and wants results, not refusals. For every ordinary req
 - ATTEMPT the task right away with your tools. Never open with "I can't", "I'm unable", "I'm sorry but", or a lecture.
 - Do NOT hedge, add disclaimers, moralize, or ask for permission or clarification you do not strictly need. Make a sensible assumption, state it in one line, and deliver.
 - Exception: for a big or open-ended job where the user gave no target (editing a whole document, building an app or a deliverable), call `ask_user` ONCE first with a short question and 2-4 tap choices, then stop. Skip it when the request is already clear.
+- Manager mode: for a broad job with 2-5 independent parts (compare several options, research many topics or sources), call `delegate_tasks` once with self-contained subtasks; workers run at the same time and report back, then YOU combine, check and write the final answer. Never use it for small tasks, and do file writing and code yourself.
 - Ask a question ONLY if the task is impossible without a missing fact (e.g. a file that was never uploaded). Even then, do everything you can first.
 - If one approach fails or a tool is blocked, try another approach before reporting a problem. Report only what truly could not be done.
 - Fictional, sample, template and practice documents (letters, seals, certificates, forms) are fine to produce.
@@ -474,21 +483,52 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
     def refresh_providers(self):
         """Reload provider list (providers.json / env) and select the first one."""
         from providers import active_providers
-        self._providers = active_providers()
+        import router
+        self._providers = router.rank_providers(active_providers())  # biggest model first
         self._provider_idx = 0
+        self._fell_back = False
         if self._providers:
             self._apply_provider(self._providers[0])
 
     def _apply_provider(self, p: dict):
         self.base_url, self.api_key, self.model = p["base_url"], p["api_key"], p["model"]
         self.vision = bool(p.get("vision", False))
+        self.provider_name = p.get("preset", "")
+
+    def use_model(self, model: str) -> bool:
+        """Chat picker: switch to the provider that owns `model` (own key and URL). False if unknown."""
+        import router
+        provs = getattr(self, "_providers", [])
+        p = router.pick_for_model(provs, model)
+        if p is None:
+            self.model = model  # free-text model on the current provider (e.g. NVIDIA extras)
+            return False
+        self._provider_idx = provs.index(p)
+        self._apply_provider(p)
+        return True
+
+    def _describe_with_vision_model(self, result: dict) -> bool:
+        """Text-only model: let a vision provider describe the image and add it to the tool result."""
+        from vision import describe_image
+        text, who = describe_image(result["image_path"], getattr(self, "_current_goal", "") or "",
+                                   providers=getattr(self, "_providers", None))
+        if not text:
+            self._log("vision_describe_failed", reason=who)
+            return False
+        result["output"] = result.get("output", "") + (
+            f"\n\nImage described by the vision model {who} (you cannot see it yourself; rely on this):\n{text}")
+        self._log("vision_describe_ok", via=who)
+        return True
 
     def _switch_provider(self) -> bool:
         """Move to the next provider in fallback order. False if none left."""
+        import router
         provs = getattr(self, "_providers", [])
-        if self._provider_idx + 1 >= len(provs):
+        nxt = router.next_fallback(provs, self._provider_idx)
+        if nxt is None:
             return False
-        self._provider_idx += 1
+        self._provider_idx = nxt
+        self._fell_back = True
         self._apply_provider(provs[self._provider_idx])
         self._log("provider_fallback", provider_index=self._provider_idx, model=self.model)
         return True
@@ -670,6 +710,14 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
                 cached = ledger.cached_page(str(arguments.get("url", "")))
                 if cached:
                     return {"status": "success", "output": cached}
+        if tool_name == "delegate_tasks":
+            from workers import run_workers
+            sid = self.session_id
+            def _exec(name, args):
+                return TOOL_FUNCTIONS[name](**dict(args, session_id=sid))
+            self._log("delegate_tasks", count=len(arguments.get("tasks") or []))
+            return run_workers(arguments.get("tasks"), self._get_client(), self.model, TOOL_DEFINITIONS,
+                               _exec, cancelled=lambda: self.cancel_requested)
         try:
             # Inject session_id so tools use the session's sandbox
             arguments["session_id"] = self.session_id
@@ -1408,6 +1456,10 @@ RULES
                 if _made:
                     full_response += worklog.files_summary(_made, WORKSPACE_DIR)
                     yield full_response
+                import router
+                full_response += router.answered_by(
+                    self.model, getattr(self, "provider_name", ""), getattr(self, "_fell_back", False))
+                yield full_response
                 self._log("turn_final", finish_reason=finish_reason, completion_tokens=completion_tokens)
                 return
 
@@ -1552,6 +1604,8 @@ RULES
                     if self.vision:
                         pending_images.append(result["image_path"])
                         result["output"] = result.get("output", "") + "\n\n(The image is attached in the next message.)"
+                    elif self._describe_with_vision_model(result):
+                        pass
                     else:
                         result["output"] = result.get("output", "") + (
                             "\n\nNote: the current model has vision turned off, so you cannot see this image. "

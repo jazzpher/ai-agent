@@ -1,11 +1,13 @@
 """Light agentic helpers: plan parsing and a small persistent memory store.
 
-No network, no keys. Memory lives in the workspace MEMORY.md file (the same file
-the agent already loads each turn). On Render Free that file is wiped on restart.
+No network, no keys. Memory lives in Neon/Postgres when DATABASE_URL is set (durable across Render
+restarts), with the workspace MEMORY.md file as cache and fallback.
 """
 import os
 import re
 import threading
+
+import memory_store
 
 MAX_PLAN_STEPS = 6
 MAX_MEMORY_ITEMS = 40
@@ -32,7 +34,7 @@ def plan_checklist(steps: list) -> str:
     return "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1))
 
 
-def _read(path: str) -> list:
+def _read_file(path: str) -> list:
     try:
         with open(path, "r", encoding="utf-8") as f:
             return [ln.rstrip("\n") for ln in f if ln.strip()]
@@ -40,10 +42,32 @@ def _read(path: str) -> list:
         return []
 
 
-def _write(path: str, lines: list) -> None:
+def _write_file(path: str, lines: list) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + ("\n" if lines else ""))
+
+
+def _read(path: str) -> list:
+    """Database first (durable), file as cache and fallback. Seeds an empty database from the file."""
+    db = memory_store.db_read()
+    local = _read_file(path)
+    if db is None:
+        return local
+    if not db and local:
+        memory_store.db_write(local)
+        return local
+    if db != local:
+        try:
+            _write_file(path, db)
+        except OSError:
+            pass
+    return db
+
+
+def _write(path: str, lines: list) -> None:
+    _write_file(path, lines)
+    memory_store.db_write(lines)
 
 
 def memory_action(path: str, action: str, text: str = "") -> dict:

@@ -48,6 +48,11 @@ def memory(action: str, text: str = "", session_id: str = None) -> dict:
     return memory_action(MEMORY_FILE, action, text)
 
 
+def delegate_tasks(tasks=None, session_id: str = None) -> dict:
+    """Placeholder: the agent runs this itself (it needs the model client). See AIAgent._execute_tool."""
+    return {"status": "error", "output": "delegate_tasks is only available inside the agent loop."}
+
+
 def ask_user(question: str = "", options=None, session_id: str = None) -> dict:
     """Show one clarifying question with quick-choice buttons. The turn ends so the user can tap."""
     return {"status": "success", "output": "Question shown to the user with tap-to-answer choices. Stop now and wait for the answer."}
@@ -1321,6 +1326,36 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "delegate_tasks",
+            "description": (
+                "Manager mode: split a BIG task into 2-5 independent subtasks that run at the same time "
+                "in separate workers (read-only: web_search, fetch_page, job_search, read_file, list_files). "
+                "Use it for broad research, comparing several things, or gathering from many sources. "
+                "Do NOT use it for small tasks or for writing files/running code; do those yourself with the "
+                "results. Each subtask must be self-contained (workers see nothing else)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string", "description": "Short name of the subtask."},
+                                "instructions": {"type": "string", "description": "Full, self-contained instructions."},
+                            },
+                            "required": ["title", "instructions"],
+                        },
+                    },
+                },
+                "required": ["tasks"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "ask_user",
             "description": (
                 "Ask ONE short clarifying question with 2-4 quick-choice answers, then stop and wait. "
@@ -1361,5 +1396,6 @@ TOOL_FUNCTIONS = {
     "remove_background": remove_background,
     "recall_step": recall_step,
     "memory": memory,
+    "delegate_tasks": delegate_tasks,
     "ask_user": ask_user,
 }

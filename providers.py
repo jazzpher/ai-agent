@@ -16,7 +16,7 @@ from api_retry import make_client, completion_with_retry
 from config import NVIDIA_API_KEY, NVIDIA_BASE_URL, DEFAULT_MODEL
 
 PROVIDERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "providers.json")
-MAX_SLOTS = 3
+MAX_SLOTS = 4
 
 # name -> (base_url, suggested model). Models change often: edit in the UI.
 PRESETS = {
@@ -58,7 +58,7 @@ def environment_providers() -> list[dict]:
             normalized.append(p)
         return normalized
     except (ValueError, TypeError):
-        raise ValueError("AGENT_PROVIDERS_JSON must be a JSON list of 1 to 3 valid provider objects.") from None
+        raise ValueError("AGENT_PROVIDERS_JSON must be a JSON list of 1 to 4 valid provider objects.") from None
 
 
 def load_providers() -> list[dict]:

@@ -323,7 +323,8 @@ def model_choices():
     """(label, id) pairs: the models of the enabled providers plus known free NVIDIA extras."""
     try:
         from providers import active_providers
-        ids = [p["model"] for p in active_providers()]
+        import router
+        ids = [p["model"] for p in router.rank_providers(active_providers())]  # biggest first
     except Exception:
         ids = []
     seen, out = set(), []
@@ -338,13 +339,13 @@ def apply_model_choice(agent):
     """Re-apply the chat picker after refresh_providers() resets the model."""
     choice = getattr(agent, "_picked_model", None)
     if choice:
-        agent.model = choice
+        agent.use_model(choice)
 
 
 def set_model_choice(choice, agent: AIAgent):
     agent._picked_model = (choice or "").strip() or None
     if agent._picked_model:
-        agent.model = agent._picked_model
+        agent.use_model(agent._picked_model)
     return agent
 
 

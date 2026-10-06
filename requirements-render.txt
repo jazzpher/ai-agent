@@ -7,6 +7,7 @@ ddgs==9.16.0
 trafilatura==1.12.2
 tiktoken==0.8.0
 Pillow==11.3.0
+psycopg[binary]==3.2.3
 # Document handling (for view_file tool)
 python-docx==1.1.2
 python-pptx==1.0.2
