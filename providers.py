@@ -71,10 +71,25 @@ def load_providers() -> list[dict]:
         items = []
     if not items:
         items = environment_providers()
-    if not items and NVIDIA_API_KEY:
-        base, model = PRESETS["NVIDIA NIM"]
-        items = [{"preset": "NVIDIA NIM", "base_url": base, "model": model,
-                  "api_key": NVIDIA_API_KEY, "enabled": True}]
+    if not items:
+        items = env_key_providers()
+    return items
+
+
+ENV_KEYS = (("NVIDIA NIM", "NVIDIA_API_KEY"), ("Groq", "GROQ_API_KEY"),
+            ("Gemini", "GEMINI_API_KEY"), ("OpenRouter", "OPENROUTER_API_KEY"))
+
+
+def env_key_providers() -> list[dict]:
+    """One slot per provider API key set in the environment (durable on Render)."""
+    items = []
+    for preset, var in ENV_KEYS:
+        key = NVIDIA_API_KEY if var == "NVIDIA_API_KEY" else os.environ.get(var, "")
+        if key:
+            base, model = PRESETS[preset]
+            items.append({**_blank(), "preset": preset, "base_url": base, "model": model,
+                          "api_key": key, "enabled": True,
+                          "vision": PRESET_VISION.get(preset, False)})
     return items
 
 
