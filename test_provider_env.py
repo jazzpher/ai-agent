@@ -56,3 +56,13 @@ class EnvironmentProvidersTest(unittest.TestCase):
             with self.assertRaises(ValueError) as exc:
                 providers.load_providers()
             self.assertNotIn('secret-text', str(exc.exception))
+
+
+def test_env_key_providers(monkeypatch):
+    import providers
+    monkeypatch.setattr(providers, "NVIDIA_API_KEY", "n")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "o")
+    monkeypatch.setenv("GROQ_API_KEY", "g")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    got = [p["preset"] for p in providers.env_key_providers()]
+    assert got == ["NVIDIA NIM", "Groq", "OpenRouter"]
