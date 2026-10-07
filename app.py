@@ -96,6 +96,14 @@ def format_metrics(agent) -> str:
 # SANDBOX STATUS
 # ============================================================
 
+def refresh_sandbox_status(agent):
+    text = format_sandbox_status(agent)
+    if getattr(agent, "_last_sandbox_display", None) == text:
+        return gr.skip()
+    agent._last_sandbox_display = text
+    return text
+
+
 def approval_warning() -> str:
     mode = approval_mode()
     if mode == "off":
@@ -113,7 +121,7 @@ def format_sandbox_status(agent) -> str:
 
     if mode in {"bubblewrap", "landlock"}:
         return (f"**Kernel sandbox: ACTIVE ({mode})**\n"
-                "- Bash/Python: isolated filesystem, no network, clean environment, resource limits.\n"
+                "- Bash/Python: restricted file access, no network, clean environment, resource limits.\n"
                 "- Package installs require approval and get network access inside the sandbox.\n"
                 "- Only the tool runner is isolated; the app and built-in fetch/file tools remain trusted.")
     if mode == "docker":
@@ -936,7 +944,7 @@ def build_app():
         artifact_close.click(lambda: gr.update(visible=False), outputs=[artifact_viewer], queue=False)
         open_timer.tick(live_workspace, inputs=[agent_state, files_pick], outputs=[files_usage, files_tree_html],
                         queue=False, show_progress="hidden")
-        open_timer.tick(lambda agent: format_sandbox_status(agent), inputs=[agent_state],
+        open_timer.tick(refresh_sandbox_status, inputs=[agent_state],
                         outputs=[sandbox_md], queue=False, show_progress="hidden")
         chat_timer = gr.Timer(1.5)
         chat_timer.tick(poll_background_chat, inputs=[agent_state], outputs=chat_outputs,
