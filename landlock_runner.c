@@ -8,6 +8,7 @@
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 struct ruleset { uint64_t fs; };
@@ -16,6 +17,9 @@ static void fail(const char *s) { perror(s); exit(125); }
 static void rule(int fd, const char *p, uint64_t rights) {
  struct pathrule r={.access=rights,.fd=open(p,O_PATH|O_CLOEXEC)};
  if(r.fd<0) fail("open allowed runtime");
+ struct stat st;
+ if(fstat(r.fd,&st)) fail("runtime stat");
+ if(!S_ISDIR(st.st_mode)) r.access &= (1ULL<<0)|(1ULL<<1)|(1ULL<<2)|(1ULL<<14);
  if(syscall(445,fd,1,&r,0)<0) fail("landlock rule");
  close(r.fd);
 }
