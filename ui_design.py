@@ -229,7 +229,7 @@ footer {display:none !important;}
 .wl-s {flex-basis:100%; color:var(--ws-muted); font-size:12px; overflow-wrap:anywhere;}
 .think-body {padding:8px 12px 10px; border-top:1px solid var(--ws-line); color:var(--ws-muted); font-size:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; max-height:220px; overflow:auto;}
 .think-live > summary {font-style:italic;}
-.task-plan {border:1px solid var(--ws-line); border-radius:12px; padding:14px; margin:12px 0; font-size:16px;}
+.task-plan {border:1px solid var(--ws-line); border-radius:12px; padding:14px; margin:12px 0; font-size:13px;}
 .task-plan ol {list-style:none; margin:0; padding:0;}
 .plan-title {font-weight:600; margin-bottom:10px;}
 .plan-row > div {min-width:0; flex:1;}
@@ -238,8 +238,8 @@ footer {display:none !important;}
 .task-plan {width:100%; box-sizing:border-box;}
 .plan-row {display:flex; gap:10px; padding:8px 0; line-height:1.6;}
 .plan-icon {min-width:20px;}
-.plan-label {display:block; font-size:13px; color:var(--ws-muted);}
-.plan-command-label {font-size:14px; font-weight:600; margin:12px 0 6px;}
+.plan-label {display:block; font-size:12px; color:var(--ws-muted);}
+.plan-command-label {font-size:13px; font-weight:600; margin:12px 0 6px;}
 .plan-row.blocked {color:#b3261e;}
 @media(max-width:600px) {#agent-chat .task-plan {padding:10px; margin:8px -6px; width:calc(100% + 12px);} .task-plan .wl-row {padding:6px;} .task-plan .wl summary {padding:8px;} .plan-row {gap:6px;} }
 .wl-run {color:var(--ws-muted); font-size:13px; padding:4px 2px;}
@@ -335,12 +335,16 @@ footer {display:none !important;}
 #agent-chat {min-height:420px !important;}
 #agent-chat .message {padding:14px 16px !important; margin-block:10px !important;}
 #agent-chat .message .prose, #agent-chat .message .prose p, #agent-chat .message .prose li {
- font-size:16px !important; line-height:1.75 !important;
+ font-size:14px !important; line-height:1.6 !important;
 }
 #agent-chat .message .prose p {margin-block:0.65em;}
+/* Keep checklist rows below prose sizing, including the list-item override. */
+#agent-chat .message .prose .task-plan, #agent-chat .message .prose .task-plan .plan-row {font-size:13px !important; line-height:1.55 !important;}
+#agent-chat .task-plan .plan-title {font-size:13px;}
+#agent-chat .task-plan .wl > summary {font-size:13px;}
 #message-input textarea {font-size:16px !important; line-height:1.6 !important; min-height:64px !important;}
 #model-picker .wrap, #model-picker input, #examples input {font-size:16px !important;}
-#agent-chat .wl, #agent-chat .fc {font-size:15px; line-height:1.6;}
+#agent-chat .wl, #agent-chat .fc {font-size:13px; line-height:1.6;}
 #agent-chat .think-body, #agent-chat .fc-pre {font-size:14px; line-height:1.65; max-height:320px;}
 #agent-chat .wl-box pre, #agent-chat .writing-live pre {font-size:13px; line-height:1.65;}
 @media (max-width:640px) {
@@ -353,7 +357,7 @@ footer {display:none !important;}
  input, textarea, select, #file-status textarea {font-size:16px !important;}
  #send-button, #stop-button {font-size:16px; height:52px; min-height:52px;}
  #model-picker .wrap, #model-picker input {height:40px; min-height:40px !important;}
- .empty-chat p {font-size:16px; line-height:1.75;}
+ .empty-chat p {font-size:14px; line-height:1.6;}
  #agent-chat .think-body, #agent-chat .fc-pre {max-height:40dvh;}
 }
 
