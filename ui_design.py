@@ -232,11 +232,16 @@ footer {display:none !important;}
 .task-plan {border:1px solid var(--ws-line); border-radius:12px; padding:14px; margin:12px 0; font-size:16px;}
 .task-plan ol {list-style:none; margin:0; padding:0;}
 .plan-title {font-weight:600; margin-bottom:10px;}
+.plan-row > div {min-width:0; flex:1;}
+.task-plan .wl summary {flex-wrap:wrap;}
+.task-plan .wl-t {white-space:nowrap;}
+.task-plan {width:100%; box-sizing:border-box;}
 .plan-row {display:flex; gap:10px; padding:8px 0; line-height:1.6;}
 .plan-icon {min-width:20px;}
 .plan-label {display:block; font-size:13px; color:var(--ws-muted);}
 .plan-command-label {font-size:14px; font-weight:600; margin:12px 0 6px;}
 .plan-row.blocked {color:#b3261e;}
+@media(max-width:600px) {#agent-chat .task-plan {padding:10px; margin:8px -6px; width:calc(100% + 12px);} .task-plan .wl-row {padding:6px;} .task-plan .wl summary {padding:8px;} .plan-row {gap:6px;} }
 .wl-run {color:var(--ws-muted); font-size:13px; padding:4px 2px;}
 .fc-tag {white-space:nowrap; flex:none; font-size:10px; font-weight:700; letter-spacing:.04em; border:1px solid var(--ws-line); border-radius:6px; padding:2px 6px; color:var(--ws-muted);}
 .fc-name {font-weight:600; overflow-wrap:anywhere;}

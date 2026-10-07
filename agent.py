@@ -1115,7 +1115,7 @@ RULES
                 analysis_thinking_msg, self._format_analysis_for_user(analysis)
             )
             self._plan_steps = agentic.parse_plan(analysis)
-            self._public_plan = plan_ui.Plan(self._plan_steps)
+            self._public_plan = plan_ui.Plan([s if len(s) <= 160 else s[:157].rsplit(" ", 1)[0] + "..." for s in self._plan_steps])
             if self._plan_steps:
                 full_response += self._public_plan.marker() + "\n\n"
             yield full_response
