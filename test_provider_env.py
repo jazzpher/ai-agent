@@ -80,3 +80,17 @@ def test_vision_only_slot_never_answers(monkeypatch):
     assert [p["model"] for p in answering] == [items[0]["model"]]
     seeing = router.rank_providers(items, need_vision=True)
     assert seeing[0]["vision_only"] is True
+
+
+def test_agent_keeps_vision_only_slot_for_describe(monkeypatch):
+    import agent, providers
+    monkeypatch.setattr(providers, "NVIDIA_API_KEY", "n")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "o")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(providers, "PROVIDERS_FILE", "/nonexistent/providers.json")
+    monkeypatch.delenv("AGENT_PROVIDERS_JSON", raising=False)
+    a = agent.AIAgent(api_key="x")
+    a.refresh_providers()
+    assert all(not p.get("vision_only") for p in a._providers)
+    assert any(p.get("vision_only") for p in a._all_providers)
