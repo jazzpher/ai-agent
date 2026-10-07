@@ -317,6 +317,33 @@ footer {display:none !important;}
 @media (max-width:640px) {.act-note {margin-left:0; flex-basis:100%;}}
 @media (prefers-reduced-motion:reduce) {.act-dots i {animation:none !important; opacity:.8;}}
 
+/* Readable conversation sizing. Keep the same cards, colors and log controls. */
+#chat-workspace {height:calc(100dvh - 180px); min-height:720px;}
+#agent-chat {min-height:420px !important;}
+#agent-chat .message {padding:14px 16px !important; margin-block:10px !important;}
+#agent-chat .message .prose, #agent-chat .message .prose p, #agent-chat .message .prose li {
+ font-size:16px !important; line-height:1.75 !important;
+}
+#agent-chat .message .prose p {margin-block:0.65em;}
+#message-input textarea {font-size:16px !important; line-height:1.6 !important; min-height:64px !important;}
+#model-picker .wrap, #model-picker input, #examples input {font-size:16px !important;}
+#agent-chat .wl, #agent-chat .fc {font-size:15px; line-height:1.6;}
+#agent-chat .think-body, #agent-chat .fc-pre {font-size:14px; line-height:1.65; max-height:320px;}
+#agent-chat .wl-box pre, #agent-chat .writing-live pre {font-size:13px; line-height:1.65;}
+@media (max-width:640px) {
+ .gradio-container {padding:0 8px 12px !important;}
+ #chat-workspace {height:calc(100dvh - 104px); min-height:740px;}
+ #agent-chat {min-height:58dvh !important;}
+ #agent-chat .message {padding:13px 14px !important; margin-block:12px !important;}
+ #composer {padding:12px 10px max(12px, env(safe-area-inset-bottom)); gap:8px;}
+ #message-input textarea {height:64px !important; min-height:64px !important; max-height:128px !important; font-size:16px !important;}
+ input, textarea, select, #file-status textarea {font-size:16px !important;}
+ #send-button, #stop-button {font-size:16px; height:52px; min-height:52px;}
+ #model-picker .wrap, #model-picker input {height:40px; min-height:40px !important;}
+ .empty-chat p {font-size:16px; line-height:1.75;}
+ #agent-chat .think-body, #agent-chat .fc-pre {max-height:40dvh;}
+}
+
 '''
 
 
