@@ -1070,6 +1070,7 @@ RULES
         self._public_plan = plan_ui.Plan()
         self._plan_result_status = {}
         thinking.reset(self)
+        self._display_final = None
 
         # ALWAYS trim at the start of every turn so we don't accumulate
         # infinite tool-call messages from previous turns.
@@ -1510,6 +1511,7 @@ RULES
                 import router
                 full_response += router.answered_by(
                     self.model, getattr(self, "provider_name", ""), getattr(self, "_fell_back", False))
+                self._display_final = final_text
                 yield full_response
                 self._log("turn_final", finish_reason=finish_reason, completion_tokens=completion_tokens)
                 return

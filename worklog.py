@@ -278,3 +278,25 @@ def files_summary(rel_paths, workspace_dir):
         lines.append(f"- `{rel}` ({kb:.1f} KB)")
     lines.append("\nBuksan ang 📁 sa taas para makita lahat ng file.\n")
     return "\n".join(lines)
+
+
+def render_turn(text, agent, workspace_dir=None):
+    """Keep all work available, promoting only the accepted final answer."""
+    import thinking
+    final = getattr(agent, "_display_final", None)
+    if final and final in text:
+        start = text.rfind(final)
+        before, after = text[:start], text[start + len(final):]
+        # File deliverables and model attribution remain with the answer.
+        extras_at = [i for i in (after.find("**Mga file na ginawa**"), after.find("🤖 Sumagot:")) if i >= 0]
+        split = min(extras_at) if extras_at else len(after)
+        work = before + after[:split]
+        extras = after[split:]
+        body = thinking.render(agent) + render(work, workspace_dir)
+        if not body.strip():
+            return render(final + extras, workspace_dir)
+        return ('<details class="turn-work"><summary>Thinking and work</summary>\n\n'
+                + body + '\n\n</details>\n\n' + render(final + extras, workspace_dir))
+    body = thinking.render(agent) + render(text, workspace_dir)
+    return ('<details class="turn-work" open><summary>Thinking and work · In progress</summary>\n\n'
+            + body + '\n\n</details>')

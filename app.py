@@ -187,7 +187,7 @@ def chat_stream(message: str, history: list, file_paths, agent: AIAgent):
 
     # Stream agent response (with two-pass analyze-then-act)
     for partial in agent.chat_stream(display_message, uploaded_files_info=upload_info):
-        history[-1]["content"] = thinking.render(agent) + worklog.render(partial, WORKSPACE_DIR)
+        history[-1]["content"] = worklog.render_turn(partial, agent, WORKSPACE_DIR)
         yield history, format_metrics(agent)
 
 
