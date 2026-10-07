@@ -342,7 +342,9 @@ footer {display:none !important;}
 /* Readable conversation sizing. Keep the same cards, colors and log controls. */
 #chat-workspace {height:calc(100dvh - 180px); min-height:720px;}
 #agent-chat {min-height:420px !important;}
-#agent-chat .message {padding:14px 16px !important; margin-block:10px !important;}
+#agent-chat .message {padding:14px 6px !important; margin-block:10px !important;}
+#agent-chat .bubble {margin-left:6px !important; margin-right:6px !important; max-width:calc(100% - 12px) !important; min-width:0;}
+#agent-chat .message-row {min-width:0;}
 #agent-chat .message .prose, #agent-chat .message .prose p, #agent-chat .message .prose li {
  font-size:14px !important; line-height:1.6 !important;
 }
@@ -360,7 +362,8 @@ footer {display:none !important;}
  .gradio-container {padding:0 8px 12px !important;}
  #chat-workspace {height:calc(100dvh - 104px); min-height:740px;}
  #agent-chat {min-height:58dvh !important;}
- #agent-chat .message {padding:13px 14px !important; margin-block:12px !important;}
+ #agent-chat .message {padding:13px 4px !important; margin-block:12px !important;}
+ #agent-chat .bubble {margin-left:4px !important; margin-right:4px !important; max-width:calc(100% - 8px) !important;}
  #composer {padding:12px 10px max(12px, env(safe-area-inset-bottom)); gap:8px;}
  #message-input textarea {height:64px !important; min-height:64px !important; max-height:128px !important; font-size:16px !important;}
  input, textarea, select, #file-status textarea {font-size:16px !important;}

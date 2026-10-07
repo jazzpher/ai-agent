@@ -28,3 +28,10 @@ def test_mobile_10px_preserves_desktop_and_inputs():
     assert '.wl > summary' in mobile and '.message .prose p' in mobile
     assert '#message-input' not in mobile
     assert '#agent-chat .task-plan .plan-title {font-size:13px;}' in CSS
+
+
+def test_compact_horizontal_message_insets():
+    assert 'padding:14px 6px !important' in CSS
+    assert 'padding:13px 4px !important' in CSS
+    assert 'margin-left:4px !important; margin-right:4px !important' in CSS
+    assert 'max-width:calc(100% - 8px) !important' in CSS
