@@ -408,9 +408,9 @@ PAGE_JS = """
     const summary = e.target.closest('summary');
     const detail = summary?.parentElement;
     if (detail?.tagName === 'DETAILS' && detail.closest('#agent-chat')) {
-      setTimeout(() => workChoices.set(detailKey(detail), detail.open), 0);
+      workChoices.set(detailKey(detail), !detail.open);
     }
-  });
+  }, true);
   const hydrate = () => {
     document.querySelectorAll('#agent-chat details').forEach(el => {
       const key = detailKey(el);
