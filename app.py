@@ -1010,6 +1010,9 @@ if __name__ == "__main__":
 
     settings = launch_settings()  # validate before constructing any app/session
     app = build_app()
+    if os.environ.get("AGENT_SANDBOX_MODE") == "bubblewrap":
+        from kernel_sandbox import available
+        print("[sandbox] startup capability:", available(), flush=True)
     app.launch(**settings, blocked_paths=[
         str(Path(__file__).parent / name)
         for name in (".env", "providers.json", ".agent_logs", ".sandboxes", ".context")
