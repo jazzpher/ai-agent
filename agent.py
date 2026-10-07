@@ -793,6 +793,8 @@ Fix: <one concrete next step>
 
 RULES
 - PASS unless there is a real, specific problem. Do not nitpick style or wording.
+- The User goal is the original full request, not a shortened summary. Preserve any exact requested answer literally, including punctuation, capitalization and spacing. Never shorten, trim, paraphrase or invent a different required string. If the answer matches the requested literal, PASS that wording; factual/tool errors may still FAIL separately.
+- You verify; you do not write or edit the answer. A wording correction is allowed only when the answer differs from the literal in the original request. Quote the full required literal in that correction.
 - A claim like "created X" or "tests pass" needs matching evidence in the tool results.
 - If a tool result shows an error or a denied/blocked command that the answer ignores, FAIL.
 - Never claim the code has a syntax or import error unless a tool output shows that error. You only see the start of the code, so judge from tool output and files.
@@ -832,7 +834,7 @@ RULES
         messages = [
             {"role": "system", "content": self._VERIFY_SYSTEM},
             {"role": "user", "content": (
-                f"**User goal:** {goal}\n\n**Tool evidence (latest):**\n{evidence[:4500]}\n\n"
+                f"**Original user request (JSON string, complete):** {json.dumps(goal, ensure_ascii=False)}\n\n**Tool evidence (latest):**\n{evidence[:4500]}\n\n"
                 + (f"**Plan the agent made (each step should be done or clearly explained):**\n"
                    f"{agentic.plan_checklist(getattr(self, '_plan_steps', []))}\n\n"
                    if getattr(self, "_plan_steps", None) else "")
@@ -1128,7 +1130,7 @@ RULES
             self.messages[-1] = {"role": "user", "content": augmented_user_message}
 
         # Track the current goal for self-evaluation and task state
-        self._current_goal = user_message[:200]
+        self._current_goal = user_message
         self.context.set_goal(user_message[:200])
         if self._plan_steps:
             self.context.set_plan(self._plan_steps)
