@@ -38,7 +38,9 @@ def run_worker(task: dict, client, model: str, tool_defs: list, execute, cancell
     messages = [{"role": "system", "content": WORKER_SYSTEM},
                 {"role": "user", "content": str(task.get("instructions") or title)}]
     last_sig, repeats, steps = None, 0, 0
-    create = create or (lambda c, **kw: c.chat.completions.create(**kw))
+    if create is None:
+        from api_retry import completion_with_retry  # 429/5xx get retried, not turned into worker failures
+        create = lambda c, **kw: completion_with_retry(c, cancelled=cancelled, **kw)
     try:
         while True:
             if cancelled():
@@ -97,7 +99,7 @@ def run_workers(tasks, client, model: str, tool_defs: list, execute, cancelled=l
     ok = sum(1 for r in results if r["status"] == "success")
     lines = [f"{len(results)} workers finished in {time.monotonic() - t0:.0f}s ({ok} succeeded)."]
     for i, r in enumerate(results, 1):
-        lines.append(f"\n### Worker {i}: {r['title']} [{r['status']}, {r['steps']} tool calls]\n{r['output']}")
+        lines.append(f"\n### Worker {i}: {r['title']} [{r['status']}, {r['steps']} tool calls, model {model}]\n{r['output']}")
     lines.append("\nManager: combine these results, check them against each other, and write the final answer. "
                  "Redo any failed subtask yourself.")
     return {"status": "success" if ok else "error", "output": "\n".join(lines), "workers": results}
