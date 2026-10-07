@@ -109,7 +109,7 @@ class RetryTest(unittest.TestCase):
         module = ast.Module(body=[ast.ClassDef(name='AIAgent', bases=[], keywords=[], body=selected, decorator_list=[])], type_ignores=[])
         scope = dict(re=__import__("re"), thinking=__import__("thinking"), time=api_retry.time, MAX_TOTAL_SECONDS=120, MAX_ITERATIONS=2, REPEAT_CALL_LIMIT=5, DEFAULT_TEMPERATURE=0.3,
                      DEFAULT_MAX_TOKENS=8192, TOOL_DEFINITIONS=[], _model_supports_reasoning=lambda m: False,
-                     completion_with_retry=api_retry.completion_with_retry, is_transient=api_retry.is_transient,
+                     completion_with_retry=api_retry.completion_with_retry, is_transient=api_retry.is_transient, public_error=api_retry.public_error,
                      CompletionCancelled=api_retry.CompletionCancelled,
                      _workspace_snapshot=lambda: {}, _changed_files=lambda before: [],
                      with_status=__import__("response_status").with_status)
