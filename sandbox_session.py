@@ -66,7 +66,8 @@ class SessionSandbox:
             if not available():
                 raise RuntimeError("Kernel sandbox requested but unavailable; refusing host execution")
             self._init_venv()
-            self.mode = "bubblewrap"
+            from kernel_sandbox import backend
+            self.mode = backend()
         elif force_mode == "docker":
             if self._init_docker():
                 self.mode = "docker"
@@ -310,7 +311,7 @@ class SessionSandbox:
         """Run a shell command in the sandbox."""
         self._touch()
         with self._lock:
-            if self.mode == "bubblewrap":
+            if self.mode in {"bubblewrap", "landlock"}:
                 from kernel_sandbox import run
                 return run(["/bin/bash", "-c", command], WORKSPACE_DIR, self._venv_path, timeout)
             if self.mode == "docker":
@@ -322,7 +323,7 @@ class SessionSandbox:
         """Run Python code in the sandbox."""
         self._touch()
         with self._lock:
-            if self.mode == "bubblewrap":
+            if self.mode in {"bubblewrap", "landlock"}:
                 from kernel_sandbox import run
                 return run([self._python_path, "-c", code], WORKSPACE_DIR, self._venv_path, timeout)
             if self.mode == "docker":
@@ -342,7 +343,7 @@ class SessionSandbox:
         """Install a package in the sandbox (temporary)."""
         self._touch()
         with self._lock:
-            if self.mode == "bubblewrap":
+            if self.mode in {"bubblewrap", "landlock"}:
                 from kernel_sandbox import run
                 return run([self._python_path, "-m", "pip", "install", "--no-cache-dir"] + package.split(),
                            WORKSPACE_DIR, self._venv_path, 180, network=True, install=True)

@@ -43,3 +43,5 @@ Thumbs.db
 
 # Provider settings (contain API keys)
 providers.json
+
+landlock-runner

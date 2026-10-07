@@ -54,3 +54,18 @@ class ApprovalTest(unittest.TestCase):
             self.assertFalse(needs_approval('run_bash','risky','bubblewrap'))
             self.assertFalse(needs_approval('run_python','risky','bubblewrap'))
             self.assertTrue(needs_approval('pip_install','safe','bubblewrap'))
+
+@unittest.skipUnless(__import__('kernel_sandbox').landlock_available(), 'Landlock ABI 3+ required')
+class LandlockIsolationTest(IsolationTest):
+    def python(self, code, timeout=5):
+        from kernel_sandbox import landlock_run
+        return landlock_run([self.venv+'/bin/python','-c',code],self.workspace,self.venv,timeout)
+    def test_nested_namespace_denied(self):
+        from kernel_sandbox import landlock_run
+        self.assertEqual(landlock_run(['/usr/bin/unshare','-Ur','true'],self.workspace,self.venv,5)['status'],'error')
+    def test_signal_parent_denied(self):
+        self.assertEqual(self.python('import os;os.kill(os.getppid(),0)')['status'],'error')
+    def test_no_detached_descendants(self):
+        self.assertEqual(self.python('import os;os.setsid()')['status'],'error')
+    def test_file_limit(self):
+        self.assertEqual(self.python("open('large','wb').write(b'x'*20*1024*1024)")['status'],'error')
