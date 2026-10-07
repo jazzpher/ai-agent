@@ -294,13 +294,9 @@ def render_turn(text, agent, workspace_dir=None):
         extras = after[split:]
         body = thinking.render(agent) + render(work, workspace_dir)
         if not body.strip():
-            return render(final + ("
-
-" + extras if extras else ""), workspace_dir)
+            return render(final + ("\n\n" + extras if extras else ""), workspace_dir)
         return ('<details class="turn-work"><summary>Thinking and work</summary>\n\n'
-                + body + '\n\n</details>\n\n' + render(final + ("
-
-" + extras if extras else ""), workspace_dir))
+                + body + '\n\n</details>\n\n' + render(final + ("\n\n" + extras if extras else ""), workspace_dir))
     body = thinking.render(agent) + render(text, workspace_dir)
     return ('<details class="turn-work" open><summary>Thinking and work · In progress</summary>\n\n'
             + body + '\n\n</details>')
