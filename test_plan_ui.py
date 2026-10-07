@@ -97,3 +97,9 @@ def test_failed_command_cannot_be_marked_done():
     a=AIAgent(api_key='fake');a._public_plan=Plan(['Task']);a._plan_result_status={1:'error'}
     assert a._execute_tool('update_plan',{'step':1,'status':'done'})['status']=='error'
     assert a._public_plan.steps[0]['status']=='pending'
+
+def test_planner_contract_preserves_user_named_outcomes():
+    from agent import AIAgent
+    assert 'preserve that exact count, order and titles' in AIAgent._ANALYZE_SYSTEM
+    assert 'not command arguments or long sentences' in AIAgent._ANALYZE_SYSTEM
+    assert 'Do not add steps for making a plan' in AIAgent._ANALYZE_SYSTEM
