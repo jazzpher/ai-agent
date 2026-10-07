@@ -19,3 +19,12 @@ def test_compact_plan_fonts_do_not_inherit_large_prose():
     assert '.task-plan .wl > summary {font-size:13px;}' in tail
     assert '.plan-label {display:block; font-size:12px;' in CSS
     assert '#agent-chat .wl, #agent-chat .fc {font-size:13px;' in tail
+
+
+def test_mobile_10px_preserves_desktop_and_inputs():
+    mobile=CSS.split('/* User-selected compact mobile text;')[1]
+    assert 'font-size:10px !important; line-height:1.6 !important;' in mobile
+    assert '.task-plan .plan-label' in mobile and '.task-plan .plan-row' in mobile
+    assert '.wl > summary' in mobile and '.message .prose p' in mobile
+    assert '#message-input' not in mobile
+    assert '#agent-chat .task-plan .plan-title {font-size:13px;}' in CSS

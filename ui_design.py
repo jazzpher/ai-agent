@@ -359,6 +359,16 @@ footer {display:none !important;}
  #model-picker .wrap, #model-picker input {height:40px; min-height:40px !important;}
  .empty-chat p {font-size:14px; line-height:1.6;}
  #agent-chat .think-body, #agent-chat .fc-pre {max-height:40dvh;}
+ /* User-selected compact mobile text; inputs retain their focus-safe size. */
+ #agent-chat .message .prose, #agent-chat .message .prose p, #agent-chat .message .prose li,
+ #agent-chat .message .prose .task-plan, #agent-chat .message .prose .task-plan .plan-row,
+ #agent-chat .task-plan .plan-title, #agent-chat .task-plan .plan-label,
+ #agent-chat .plan-command-label, #agent-chat .wl, #agent-chat .wl > summary,
+ #agent-chat .wl-i, #agent-chat .wl-t, #agent-chat .wl-s, #agent-chat .wl-row code,
+ #agent-chat .think-body, #agent-chat .fc-pre, #agent-chat .wl-box pre, #agent-chat .writing-live pre {
+  font-size:10px !important; line-height:1.6 !important;
+ }
+
 }
 
 '''
