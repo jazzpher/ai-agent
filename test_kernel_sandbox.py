@@ -55,6 +55,7 @@ class ApprovalTest(unittest.TestCase):
             self.assertFalse(needs_approval('run_python','risky','bubblewrap'))
             self.assertTrue(needs_approval('pip_install','safe','bubblewrap'))
 
+@unittest.skipUnless(__import__('kernel_sandbox').landlock_available(), 'Landlock ABI 3+ required')
 class LandlockIsolationTest(IsolationTest):
     def python(self, code, timeout=5):
         from kernel_sandbox import landlock_run
