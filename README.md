@@ -336,3 +336,11 @@ and 1280px desktop layouts. Playwright is not a production requirement.
 ## Wake page for the free Render server
 
 Render's free service sleeps after about 15 minutes idle, and a sleeping app cannot serve its own loading page. `docs/index.html` is a small static page (no secrets, no build) meant for GitHub Pages (Settings > Pages > Deploy from branch > `main` / `/docs`). Open it instead of the app link: it polls the app's public `/favicon.ico` until the app answers, then redirects to the app. It can be added to the phone home screen. Local check: `python checks/wake_page_check.py` (needs playwright and Chrome).
+
+### Render Docker isolation
+
+The Dockerfile runs the app as a non-root user and enforces `AGENT_SANDBOX_MODE=bubblewrap` for tool execution. This is not Docker-in-Docker: each Bash/Python command starts in a fresh bubblewrap mount, PID, user and network namespace, with a clean environment, read-only interpreter/package paths, private `/tmp`, and only the workspace writable. App source, provider settings, other session environments and host processes are not mounted. Seccomp blocks namespace/mount/ptrace/keyring operations. Limits: 512 MiB address space per process, 60 CPU seconds per process, 64 processes per UID, 128 descriptors, 16 MiB per output file, 64 KiB captured output. A timeout kills the command's process group; PID-namespace teardown kills its remaining children.
+
+Isolated Bash/Python commands do not ask for approval in `auto` approval mode. Package installs still ask: only the approved install gets network access and a writable session environment. If isolation cannot initialize, commands fail rather than silently run on the host. The workspace is shared within this single-user app and is ephemeral on Render Free. The app's own built-in fetch/file tools remain trusted code, outside the command sandbox. This reduces tool-child access, not whole-app or kernel exploit risk.
+
+Render: use Settings > Build > Source > Edit, select this repository and `main`, choose Docker and deploy. Keep the instance on Free. No Docker daemon or privileged container is required. Rollback to the former Python runtime must restore its Python build/start commands and keeps approval prompts; do not describe venv mode as isolation.
