@@ -484,7 +484,9 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
         """Reload provider list (providers.json / env) and select the first one."""
         from providers import active_providers
         import router
-        self._providers = router.rank_providers(active_providers())  # biggest model first
+        every = active_providers()
+        self._all_providers = every  # includes vision-only slots (needed only for image description)
+        self._providers = router.rank_providers(every)  # biggest model first
         self._provider_idx = 0
         self._fell_back = False
         if self._providers:
@@ -511,7 +513,7 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
         """Text-only model: let a vision provider describe the image and add it to the tool result."""
         from vision import describe_image
         text, who = describe_image(result["image_path"], getattr(self, "_current_goal", "") or "",
-                                   providers=getattr(self, "_providers", None))
+                                   providers=getattr(self, "_all_providers", None) or getattr(self, "_providers", None))
         if not text:
             self._log("vision_describe_failed", reason=who)
             return False
