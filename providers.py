@@ -76,6 +76,7 @@ def load_providers() -> list[dict]:
     return items
 
 
+OPENROUTER_VISION_MODEL = "dots-studio/dots-3-note-preview:free"
 ENV_KEYS = (("NVIDIA NIM", "NVIDIA_API_KEY"), ("Groq", "GROQ_API_KEY"),
             ("Gemini", "GEMINI_API_KEY"), ("OpenRouter", "OPENROUTER_API_KEY"))
 
@@ -90,6 +91,11 @@ def env_key_providers() -> list[dict]:
             items.append({**_blank(), "preset": preset, "base_url": base, "model": model,
                           "api_key": key, "enabled": True,
                           "vision": PRESET_VISION.get(preset, False)})
+            if preset == "OpenRouter":
+                # Largest free vision model: used only to describe images for the big text model.
+                items.append({**_blank(), "preset": preset, "base_url": base,
+                              "model": os.environ.get("OPENROUTER_VISION_MODEL", OPENROUTER_VISION_MODEL),
+                              "api_key": key, "enabled": True, "vision": True, "vision_only": True})
     return items
 
 

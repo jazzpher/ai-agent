@@ -65,4 +65,18 @@ def test_env_key_providers(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "g")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     got = [p["preset"] for p in providers.env_key_providers()]
-    assert got == ["NVIDIA NIM", "Groq", "OpenRouter"]
+    assert got == ["NVIDIA NIM", "Groq", "OpenRouter", "OpenRouter"]
+
+
+def test_vision_only_slot_never_answers(monkeypatch):
+    import providers, router
+    monkeypatch.setattr(providers, "NVIDIA_API_KEY", "")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "o")
+    items = providers.env_key_providers()
+    assert [p.get("vision_only", False) for p in items] == [False, True]
+    answering = router.rank_providers(items)
+    assert [p["model"] for p in answering] == [items[0]["model"]]
+    seeing = router.rank_providers(items, need_vision=True)
+    assert seeing[0]["vision_only"] is True

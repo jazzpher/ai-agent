@@ -47,6 +47,8 @@ def rank_providers(providers: list, need_vision: bool = False) -> list:
 
     need_vision: providers that can see images go first (still largest first inside each group).
     """
+    if not need_vision:
+        providers = [p for p in providers if not p.get("vision_only")]  # describe-only slots never answer
     if not routing_enabled():
         return list(providers)
     def key(item):
