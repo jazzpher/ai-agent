@@ -100,8 +100,8 @@ def approval_warning() -> str:
     mode = approval_mode()
     if mode == "off":
         return "Walang Docker at **naka-off ang approval** (AGENT_APPROVAL=off). Risky commands tatakbo agad."
-    return ("Walang Docker: risky commands (delete, overwrite, pip install, atbp.) "
-            "ay hihingi muna ng approval mo.")
+    return ("Kernel-isolated Bash/Python: no approval prompt in auto mode. "
+            "Network package installs still require approval. Venv-only risky commands require approval.")
 
 
 def format_sandbox_status(agent) -> str:
@@ -845,9 +845,10 @@ def build_app():
                     with gr.Accordion("Safety & isolation", open=False):
                         gr.Markdown("**Blocked by default:** destructive system commands, system-directory "
                                     "deletion, registry changes, pip injection, path traversal and credential reads.\n\n"
-                                    "**Temporary sandbox:** installed packages are session-only. A venv isolates "
-                                    "packages, not files or secrets; commands can modify this server. "
-                                    "Docker provides stronger isolation.\n\n" + approval_warning())
+                                    "**Kernel isolation:** Landlock/seccomp restrict file access, network and host-process actions. "
+                                    "Bubblewrap additionally provides namespace isolation when supported. "
+                                    "Only the workspace and a private temporary directory are writable. "
+                                    "The app's built-in file/fetch tools remain trusted. Venv-only mode is not isolation.\n\n" + approval_warning())
 
         with gr.Column(visible=False, elem_id="files-panel") as files_panel:
             gr.HTML('<div class="sheet-grip"></div>', elem_id="files-grip")
@@ -935,6 +936,8 @@ def build_app():
         artifact_close.click(lambda: gr.update(visible=False), outputs=[artifact_viewer], queue=False)
         open_timer.tick(live_workspace, inputs=[agent_state, files_pick], outputs=[files_usage, files_tree_html],
                         queue=False, show_progress="hidden")
+        open_timer.tick(lambda agent: format_sandbox_status(agent), inputs=[agent_state],
+                        outputs=[sandbox_md], queue=False, show_progress="hidden")
         chat_timer = gr.Timer(1.5)
         chat_timer.tick(poll_background_chat, inputs=[agent_state], outputs=chat_outputs,
                         queue=False, show_progress="hidden")
