@@ -111,6 +111,11 @@ def format_sandbox_status(agent) -> str:
     if mode == "not started":
         return "Sandbox: not started. It starts only when a tool needs it."
 
+    if mode == "bubblewrap":
+        return ("**Kernel sandbox: ACTIVE (bubblewrap)**\n"
+                "- Bash/Python: isolated filesystem, no network, clean environment, resource limits.\n"
+                "- Package installs require approval and get network access inside the sandbox.\n"
+                "- Only the tool runner is isolated; the app and built-in fetch/file tools remain trusted.")
     if mode == "docker":
         return (
             f"**Docker sandbox: ACTIVE**\n"
@@ -775,7 +780,7 @@ def build_app():
         folder_btn = gr.Button("\U0001F4C1", elem_id="folder-fab", scale=0, size="sm")
         if os.environ.get("RENDER", "").lower() == "true":
             gr.Markdown("Render free: local keys, memory and files may disappear on restart. "
-                        "Tools use a venv, not Docker isolation. Use only your own login.",
+                        "Tool isolation status is shown in Session and each command work log. Use only your own login.",
                         elem_id="render-notice")
         agent_state = gr.State(lambda: AIAgent())
         with gr.Tabs(elem_id="workspace-tabs"):

@@ -1,0 +1,10 @@
+.git
+.sandboxes
+.context
+.agent_logs
+workspace
+__pycache__
+.pytest_cache
+*.pyc
+.env
+providers.json

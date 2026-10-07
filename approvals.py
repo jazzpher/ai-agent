@@ -35,7 +35,7 @@ def needs_approval(tool_name: str, risk_level: str, sandbox_mode: str) -> bool:
         risk_level = "risky"  # installing code is always worth a look without isolation
     if risk_level != "risky":
         return False
-    return mode == "on" or sandbox_mode != "docker"
+    return mode == "on" or (tool_name == "pip_install" and sandbox_mode == "bubblewrap") or sandbox_mode not in {"docker", "bubblewrap"}
 
 
 class ApprovalGate:
