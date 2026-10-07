@@ -28,7 +28,7 @@ from response_status import with_status
 HEARTBEAT_SECONDS = 8.0  # keep the stream alive during slow sandbox/tool work
 
 import research_guard
-from api_retry import make_client, completion_with_retry, is_transient, CompletionCancelled
+from api_retry import make_client, completion_with_retry, is_transient, CompletionCancelled, public_error
 
 from config import (
     NVIDIA_API_KEY,
@@ -616,8 +616,10 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
                      "empty_response", "turn_final", "budget_exceeded", "cancelled",
                      "cancelled_mid_stream", "provider_fallback"}:
             safe = {key: value for key, value in fields.items()
-                    if key in {"attempt", "delay", "reasoning_seen", "completion_tokens", "elapsed"}
+                    if key in {"attempt", "delay", "reasoning_seen", "completion_tokens", "elapsed", "status", "provider_index"}
                     and isinstance(value, (int, float, bool))}
+            if fields.get("error") in {"APIError", "RateLimitError", "InternalServerError", "APITimeoutError", "APIConnectionError", "TimeoutError"}:
+                safe["error_type"] = fields["error"]
             print(json.dumps({"event": event, "session": self.session_id,
                               "iter": self.iteration_count, **safe}), flush=True)
         try:
@@ -1236,7 +1238,7 @@ RULES
                             kwargs["extra_body"] = self._thinking_body()
                         continue
                     self._log("api_failed", error=type(e).__name__)
-                    full_response += f"\n\n❌ API unavailable: {e}"
+                    full_response += "\n\n❌ API unavailable: " + public_error(e)
                     yield full_response
                     return
 
@@ -1317,7 +1319,7 @@ RULES
                 return
             except Exception as e:
                 self.errors += 1
-                self._log("stream_error", error=type(e).__name__)
+                self._log("stream_error", error=type(e).__name__, status=getattr(e, "status_code", None))
                 # Reasoning is not a user answer or tool side effect. It is safe
                 # to retry after reasoning-only chunks, but never after partial
                 # answer/tool-call output (which could duplicate actions).
@@ -1334,7 +1336,20 @@ RULES
                     yield full_response
                     self.iteration_count -= 1
                     continue
-                full_response += f"\n\n❌ Stream error: {e}"
+                if (_silent and is_transient(e) and not self.cancel_requested
+                        and time.monotonic() < self._completion_deadline
+                        and self._switch_provider()):
+                    # This step produced no public answer or tool calls. Keep all
+                    # previous completed tools in messages; retry only this step.
+                    client = self._get_client()
+                    _stream_retries = 0
+                    thinking.finish(self)
+                    full_response = full_response.replace(thinking_msg, "")
+                    full_response += f"\n\n🔁 Provider limit/error; switching to fallback model `{self.model}`…\n\n"
+                    yield full_response
+                    self.iteration_count -= 1
+                    continue
+                full_response += "\n\n❌ Stream error: " + public_error(e, partial=not _silent)
                 yield full_response
                 return
 

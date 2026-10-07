@@ -2,7 +2,7 @@
 import time
 import json
 import httpx
-from openai import OpenAI, APIConnectionError, APIStatusError
+from openai import OpenAI, APIConnectionError, APIStatusError, APIError
 
 # Read timeout is the max silence between bytes. Slow models (Nemotron Ultra)
 # can stay quiet for a minute or more while writing a long tool call, so 30s
@@ -28,12 +28,44 @@ def make_client(base_url, api_key):
                   timeout=build_timeout(REQUEST_TIMEOUT_SECONDS), max_retries=0)
 
 
+def is_rate_limited(error):
+    """Recognize HTTP and provider SSE rate/quota exhaustion, not auth failures."""
+    if isinstance(error, APIStatusError):
+        return error.status_code == 429
+    if not isinstance(error, APIError):
+        return False
+    body = getattr(error, "body", None) or {}
+    if isinstance(body, dict):
+        code = str(body.get("code") or body.get("type") or body.get("status") or "").lower()
+        if code in {"429", "resource_exhausted", "rate_limit_exceeded", "rate_limit_error", "insufficient_quota"}:
+            return True
+    text = str(error).lower()
+    return any(term in text for term in ("resource exhausted", "resource_exhausted", "rate limit", "quota exceeded"))
+
+
+def public_error(error, *, partial=False):
+    """User-facing failure without leaking provider payloads or request data."""
+    if is_rate_limited(error):
+        text = "Naabot ang free provider limit. Walang available na fallback ngayon; subukan ulit mamaya."
+    elif is_transient(error):
+        text = "Pansamantalang hindi available ang model. Subukan ulit mamaya."
+    else:
+        text = "Hindi natapos ang model response. Error type: " + type(error).__name__ + "."
+    if partial:
+        text += " May partial output, kaya hindi ko inulit ang request para maiwasang madoble ang actions."
+    return text
+
+
 def is_transient(error):
     # Some providers send an SSE error with only a message (no HTTP status).
     # Never retry authentication/permission/validation failures based on wording.
     if isinstance(error, APIStatusError):
         return error.status_code in TRANSIENT_STATUSES
-    return (isinstance(error, (APIConnectionError, httpx.TransportError)) or
+    if isinstance(error, APIError) and isinstance(getattr(error, "body", None), dict):
+        code = str(error.body.get("code") or error.body.get("status") or "")
+        if code.isdigit() and int(code) in TRANSIENT_STATUSES:
+            return True
+    return (is_rate_limited(error) or isinstance(error, (APIConnectionError, httpx.TransportError)) or
             isinstance(error, (TimeoutError, ConnectionError)) or
             any(term in str(error).lower() for term in (
                 "service temporarily overloaded", "temporarily unavailable",
