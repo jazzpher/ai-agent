@@ -1605,6 +1605,8 @@ RULES
                     result.get("status", "unknown") if isinstance(result, dict) else "unknown",
                     str(result.get("output", "") if isinstance(result, dict) else result)[:800] + _arg_head,
                 ))
+                if isinstance(result, dict) and result.get("sandbox") == "bubblewrap":
+                    summary = "sandboxed · network " + result.get("network", "blocked") + " | " + summary
                 full_response += f"{badge} `{tool_name}` — {elapsed:.2f}s — {summary}\n"
                 full_response += worklog.tool_detail(args, result)
                 try:

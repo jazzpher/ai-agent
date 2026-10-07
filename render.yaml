@@ -1,12 +1,11 @@
 services:
   - type: web
     name: private-ai-agent
-    runtime: python
+    runtime: docker
     plan: free
-    branch: feat/render-phone-access
+    branch: main
     autoDeploy: false
-    buildCommand: pip install -r requirements-render.txt
-    startCommand: python app.py
+    dockerfilePath: ./Dockerfile
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
@@ -17,6 +16,6 @@ services:
       - key: AGENT_PASSWORD
         sync: false
       - key: AGENT_SANDBOX_MODE
-        value: venv
+        value: bubblewrap
       - key: GRADIO_ANALYTICS_ENABLED
         value: 'False'

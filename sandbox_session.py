@@ -60,7 +60,14 @@ class SessionSandbox:
         self._initialized = False
 
         # Determine mode
-        if force_mode == "docker":
+        force_mode = force_mode or os.environ.get("AGENT_SANDBOX_MODE", "auto")
+        if force_mode == "bubblewrap":
+            from kernel_sandbox import available
+            if not available():
+                raise RuntimeError("Kernel sandbox requested but unavailable; refusing host execution")
+            self._init_venv()
+            self.mode = "bubblewrap"
+        elif force_mode == "docker":
             if self._init_docker():
                 self.mode = "docker"
             else:
@@ -194,7 +201,7 @@ class SessionSandbox:
 
     def _init_venv(self):
         """Create an ephemeral virtual environment for this session."""
-        self._venv_path = os.path.join(SANDBOX_DIR, f"session-{self.session_id}")
+        self._venv_path = os.path.join(SANDBOX_DIR, f"session-{self.session_id}-{uuid.uuid4().hex[:8]}")
         os.makedirs(self._venv_path, exist_ok=True)
 
         # Create venv
@@ -303,6 +310,9 @@ class SessionSandbox:
         """Run a shell command in the sandbox."""
         self._touch()
         with self._lock:
+            if self.mode == "bubblewrap":
+                from kernel_sandbox import run
+                return run(["/bin/bash", "-c", command], WORKSPACE_DIR, self._venv_path, timeout)
             if self.mode == "docker":
                 return self._docker_exec(command, timeout)
             else:
@@ -312,6 +322,9 @@ class SessionSandbox:
         """Run Python code in the sandbox."""
         self._touch()
         with self._lock:
+            if self.mode == "bubblewrap":
+                from kernel_sandbox import run
+                return run([self._python_path, "-c", code], WORKSPACE_DIR, self._venv_path, timeout)
             if self.mode == "docker":
                 # Write code to a temp file inside the container to avoid
                 # shell escaping issues with python -c '...'
@@ -329,6 +342,10 @@ class SessionSandbox:
         """Install a package in the sandbox (temporary)."""
         self._touch()
         with self._lock:
+            if self.mode == "bubblewrap":
+                from kernel_sandbox import run
+                return run([self._python_path, "-m", "pip", "install", "--no-cache-dir"] + package.split(),
+                           WORKSPACE_DIR, self._venv_path, 180, network=True, install=True)
             if self.mode == "docker":
                 result = self._docker_exec(
                     f"pip install --quiet --no-cache-dir {package}",
