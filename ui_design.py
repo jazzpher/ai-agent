@@ -408,7 +408,10 @@ PAGE_JS = """
     const summary = e.target.closest('summary');
     const detail = summary?.parentElement;
     if (detail?.tagName === 'DETAILS' && detail.closest('#agent-chat')) {
-      workChoices.set(detailKey(detail), !detail.open);
+      e.preventDefault();
+      const desired = !detail.open;
+      workChoices.set(detailKey(detail), desired);
+      detail.open = desired;
     }
   }, true);
   const hydrate = () => {
