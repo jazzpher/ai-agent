@@ -386,7 +386,7 @@ You operate inside a sandboxed environment. Defense is **layered**:
 - Credential files (.ssh, .env, .aws) are blocked.
 - A strict regex validates pip package names so injection is impossible.
 
-**HONESTY:** This is defense-in-depth, not an OS-level sandbox. The user has been told not to run this with admin/root privileges.
+**HONESTY:** The execution result and Session panel identify the actual mode. Bubblewrap is OS-level command isolation with no network; venv alone is not. Never assume a mode or claim whole-app isolation. If a sandbox is unavailable, report the blocker and stop retrying the same command. NEVER disable isolation, switch to host execution, change the sandbox configuration, or suggest bypassing it. Package installs require approval and get temporary network access only after approval. Use built-in fetch/download tools for network requests, then process the saved files with Python.
 
 When a command is BLOCKED, explain why and suggest a safe alternative. NEVER try to bypass the safety layer.
 
@@ -765,6 +765,7 @@ New direction: <what to do instead>
 - "Fix" should be a single concrete next step, not a full re-plan.
 - "REPLAN" is rare — only when the fundamental approach is wrong.
 - Don't propose improvements the user didn't ask for. Stay focused on the goal.
+- A sandbox-unavailable error is a real blocker. KEEP/PASS a clear, honest explanation; never suggest host execution, disabling isolation, switching environments to bypass it, or repeated retries without a change in infrastructure.
 - Match the user's language."""
 
     _VERIFY_SYSTEM = """You check an AI agent's final answer before the user sees it as finished. Compare the answer with the user's goal and the tool evidence.
@@ -785,6 +786,7 @@ RULES
 - If a tool result shows an error or a denied/blocked command that the answer ignores, FAIL.
 - Never claim the code has a syntax or import error unless a tool output shows that error. You only see the start of the code, so judge from tool output and files.
 - Tool evidence includes the start of the code that ran and the files created this turn. If a tool succeeded and the file the user asked for is listed as created, do NOT FAIL because you cannot see all of the code.
+- A sandbox-unavailable error is a real blocker. KEEP/PASS a clear, honest explanation; never suggest host execution, disabling isolation, switching environments to bypass it, or repeated retries without a change in infrastructure.
 - Match the user's language."""
 
     def _claim_check(self, client, answer: str) -> str:
@@ -968,6 +970,7 @@ RULES
 - Keep the entire plan under 250 words and 4 steps. Do not repeat the user's requirements at length.
 - For research: start with 2-4 targeted web searches and 3-6 sources, read primary pages, then synthesize. Do not promise 50/200 postings, frequency statistics or exhaustive coverage without data already available.
 - The current date supplied below is authoritative. Treat the current year as current, not forward-looking; distinguish older published statistics from current postings.
+- A sandbox-unavailable error is a real blocker. KEEP/PASS a clear, honest explanation; never suggest host execution, disabling isolation, switching environments to bypass it, or repeated retries without a change in infrastructure.
 - Match the user's language."""
 
     def _analyze_task(self, client, user_message: str, uploaded_files_info: str) -> str:
