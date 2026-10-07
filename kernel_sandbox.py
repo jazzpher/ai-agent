@@ -10,7 +10,7 @@ import ctypes.util
 import errno
 
 
-def seccomp_file():
+def seccomp_file(network=True, landlock=False):
     """Block namespace/mount/host introspection syscalls even in nested children."""
     lib = ctypes.CDLL(ctypes.util.find_library('seccomp') or 'libseccomp.so.2')
     lib.seccomp_init.restype = ctypes.c_void_p
@@ -25,7 +25,10 @@ def seccomp_file():
     target = tempfile.TemporaryFile()
     try:
         denied = 0x00050000 | errno.EPERM
-        for name in ['unshare', 'setns', 'mount', 'umount2', 'pivot_root', 'ptrace',
+        extra = ['kill','tkill','tgkill','pidfd_send_signal','setsid','setpgid'] if landlock else []
+        if not network:
+            extra += ['socket','socketpair','connect','bind','listen','accept','accept4','sendto','sendmsg','sendmmsg']
+        for name in extra + ['unshare', 'setns', 'mount', 'umount2', 'pivot_root', 'ptrace',
                      'process_vm_readv', 'process_vm_writev', 'bpf', 'keyctl',
                      'add_key', 'request_key', 'open_by_handle_at']:
             number = lib.seccomp_syscall_resolve_name(name.encode())
@@ -53,7 +56,7 @@ def seccomp_file():
         lib.seccomp_release(context)
 
 
-def available():
+def bubblewrap_available():
     binary = shutil.which('bwrap')
     if not binary:
         return False
@@ -67,6 +70,22 @@ def available():
         return r.returncode == 0
     except Exception:
         return False
+
+
+def landlock_available():
+    if not os.path.isfile(os.path.join(os.path.dirname(__file__), 'landlock-runner')):
+        return False
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        return libc.syscall(444, None, 0, 1) >= 3
+    except Exception:
+        return False
+
+def available():
+    return bubblewrap_available() or landlock_available()
+
+def backend():
+    return 'bubblewrap' if bubblewrap_available() else 'landlock' if landlock_available() else 'unavailable'
 
 
 def command(argv, workspace, venv, *, network=False, install=False):
@@ -105,7 +124,7 @@ def command(argv, workspace, venv, *, network=False, install=False):
     return args
 
 
-def run(argv, workspace, venv, timeout, *, network=False, install=False):
+def bubblewrap_run(argv, workspace, venv, timeout, *, network=False, install=False):
     """Resource-limited child group; timeout kills descendants, not only the shell."""
     args = command(argv, workspace, venv, network=network, install=install)
     prlimit = shutil.which('prlimit')
@@ -133,3 +152,36 @@ def run(argv, workspace, venv, timeout, *, network=False, install=False):
             'returncode':p.returncode, 'sandbox':'bubblewrap',
             'network':'approved install' if network else 'blocked',
             'output':f'Timed out after {timeout}s' if timed_out else text.strip() or '(no output)'}
+
+def landlock_run(argv, workspace, venv, timeout, *, network=False, install=False):
+    runner = os.path.join(os.path.dirname(__file__), 'landlock-runner')
+    with tempfile.TemporaryDirectory(prefix='agent-tool-') as temp, seccomp_file(network=network, landlock=True) as policy, tempfile.TemporaryFile() as output:
+        runtimes = [p for p in ['/usr','/lib','/lib64','/bin','/sbin'] if os.path.exists(p)]
+        if sys.prefix != sys.base_prefix:
+            runtimes.append(sys.prefix)
+        if network:
+            runtimes += [p for p in ['/etc/resolv.conf','/etc/hosts','/etc/ssl/certs'] if os.path.exists(p)]
+        args = [runner,os.path.realpath(workspace),('+' if install else '')+os.path.realpath(venv),temp,str(policy.fileno()),str(len(runtimes))]+runtimes+list(argv)
+        env={'PATH':venv+'/bin:/usr/local/bin:/usr/bin:/bin','HOME':temp,'TMPDIR':temp,'LANG':'C.UTF-8','VIRTUAL_ENV':venv,'PYTHONNOUSERSITE':'1','OPENBLAS_NUM_THREADS':'1'}
+        p=subprocess.Popen(args,stdout=output,stderr=output,stdin=subprocess.DEVNULL,start_new_session=True,pass_fds=(policy.fileno(),),env=env)
+        timed_out=False
+        try:
+            p.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out=True
+        finally:
+            # setsid/setpgid are denied, so descendants cannot leave this group.
+            try: os.killpg(p.pid,signal.SIGKILL)
+            except ProcessLookupError: pass
+            p.wait()
+        output.seek(0);text=output.read(65536).decode(errors='replace')
+        if output.read(1): text+='\n[Output capped at 64 KB]'
+        return {'status':'error' if timed_out or p.returncode else 'success','returncode':p.returncode,'sandbox':'landlock','network':'approved install' if network else 'blocked','output':f'Timed out after {timeout}s' if timed_out else text.strip() or '(no output)'}
+
+def run(argv, workspace, venv, timeout, *, network=False, install=False):
+    selected = backend()
+    if selected == 'bubblewrap':
+        return bubblewrap_run(argv,workspace,venv,timeout,network=network,install=install)
+    if selected == 'landlock':
+        return landlock_run(argv,workspace,venv,timeout,network=network,install=install)
+    raise RuntimeError('Kernel isolation unavailable; refusing host execution')

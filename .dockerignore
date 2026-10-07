@@ -8,3 +8,5 @@ __pycache__
 *.pyc
 .env
 providers.json
+
+landlock-runner

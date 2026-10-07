@@ -111,8 +111,8 @@ def format_sandbox_status(agent) -> str:
     if mode == "not started":
         return "Sandbox: not started. It starts only when a tool needs it."
 
-    if mode == "bubblewrap":
-        return ("**Kernel sandbox: ACTIVE (bubblewrap)**\n"
+    if mode in {"bubblewrap", "landlock"}:
+        return (f"**Kernel sandbox: ACTIVE ({mode})**\n"
                 "- Bash/Python: isolated filesystem, no network, clean environment, resource limits.\n"
                 "- Package installs require approval and get network access inside the sandbox.\n"
                 "- Only the tool runner is isolated; the app and built-in fetch/file tools remain trusted.")

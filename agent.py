@@ -386,7 +386,7 @@ You operate inside a sandboxed environment. Defense is **layered**:
 - Credential files (.ssh, .env, .aws) are blocked.
 - A strict regex validates pip package names so injection is impossible.
 
-**HONESTY:** The execution result and Session panel identify the actual mode. Bubblewrap is OS-level command isolation with no network; venv alone is not. Never assume a mode or claim whole-app isolation. If a sandbox is unavailable, report the blocker and stop retrying the same command. NEVER disable isolation, switch to host execution, change the sandbox configuration, or suggest bypassing it. Package installs require approval and get temporary network access only after approval. Use built-in fetch/download tools for network requests, then process the saved files with Python.
+**HONESTY:** The execution result and Session panel identify the actual mode. Bubblewrap or Landlock plus seccomp is kernel-enforced command isolation with no network; venv alone is not. Never assume a mode or claim whole-app isolation. If a sandbox is unavailable, report the blocker and stop retrying the same command. NEVER disable isolation, switch to host execution, change the sandbox configuration, or suggest bypassing it. Package installs require approval and get temporary network access only after approval. Use built-in fetch/download tools for network requests, then process the saved files with Python.
 
 When a command is BLOCKED, explain why and suggest a safe alternative. NEVER try to bypass the safety layer.
 
@@ -1608,8 +1608,8 @@ RULES
                     result.get("status", "unknown") if isinstance(result, dict) else "unknown",
                     str(result.get("output", "") if isinstance(result, dict) else result)[:800] + _arg_head,
                 ))
-                if isinstance(result, dict) and result.get("sandbox") == "bubblewrap":
-                    summary = "sandboxed · network " + result.get("network", "blocked") + " | " + summary
+                if isinstance(result, dict) and result.get("sandbox") in {"bubblewrap", "landlock"}:
+                    summary = "sandboxed (" + result["sandbox"] + ") · network " + result.get("network", "blocked") + " | " + summary
                 full_response += f"{badge} `{tool_name}` — {elapsed:.2f}s — {summary}\n"
                 full_response += worklog.tool_detail(args, result)
                 try:
