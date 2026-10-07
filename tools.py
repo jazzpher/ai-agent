@@ -1399,3 +1399,16 @@ TOOL_FUNCTIONS = {
     "delegate_tasks": delegate_tasks,
     "ask_user": ask_user,
 }
+
+# Public execution metadata: stripped before invoking the underlying tool.
+for _definition in TOOL_DEFINITIONS:
+    _params = _definition['function']['parameters']
+    _params.setdefault('properties', {})['plan_step'] = {
+        'type':'integer', 'description':'1-based public plan step this command belongs to. Use when a plan exists.'}
+TOOL_DEFINITIONS.append({'type':'function','function':{
+    'name':'update_plan','description':'Update the visible public plan after inspecting command evidence. Never mark done before the step is complete.',
+    'parameters':{'type':'object','properties':{
+        'step':{'type':'integer','description':'1-based plan step'},
+        'status':{'type':'string','enum':['pending','running','done','blocked']},
+        'note':{'type':'string','description':'Short public progress note, no private reasoning'}},
+        'required':['step','status']}}})

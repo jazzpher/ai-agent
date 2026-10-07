@@ -2,6 +2,7 @@
 file cards with inline preview, quick-choice chips and a final file summary.
 Pure functions; the agent's own message history is never changed."""
 import html
+import plan_ui
 import base64
 import json
 from functools import lru_cache
@@ -51,7 +52,12 @@ def _group_html(category, steps):
 def _block_html(inner, running):
     """inner = text after the Action line up to the block end. Returns (html, leftover_text)."""
     groups, left, checks = [], [], []
+    current_plan = ""
     for line in inner.split("\n"):
+        if line.startswith('<div class="plan-command-label">'):
+            current_plan = line
+            groups.append((current_plan, []))
+            continue
         detail = _DETAIL.fullmatch(line.strip())
         if detail and groups and groups[-1][1]:
             try:
@@ -76,7 +82,7 @@ def _block_html(inner, running):
             checks.append(line.strip())
         elif line.strip() and line.strip() != "---":
             left.append(line)
-    out = "".join(_group_html(c, s) for c, s in groups)
+    out = "".join(c if c.startswith('<div class="plan-command-label">') else _group_html(c, s) for c, s in groups)
     if checks:
         out += ('<details class="wl"><summary><span class="wl-i">&#10003;</span> Self-check'
                 '</summary>' + "".join(f'<div class="wl-row"><div class="wl-s">{_esc(c)}</div></div>' for c in checks)
@@ -190,7 +196,10 @@ def _file_card_cached(path, rel, mtime, size):
 
 def render(text, workspace_dir=None, running=False):
     """Rewrite raw agent text. Idempotent on text without markers."""
-    if not text or ("🔧 **Action:**" not in text and "[[file:" not in text and "[[ask:" not in text):
+    if not text:
+        return text
+    text = plan_ui.render(text)
+    if ("🔧 **Action:**" not in text and "[[file:" not in text and "[[ask:" not in text):
         return text
     out, pos = [], 0
     for m in _ACTION.finditer(text):

@@ -15,6 +15,7 @@ Output format (rendered as Markdown in the chat):
     <final response text>
 """
 import thinking
+import plan_ui
 import json
 import os
 import re
@@ -702,6 +703,13 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
         yield ("done", box.get("value"))
 
     def _execute_tool(self, tool_name: str, arguments: dict) -> dict:
+        arguments = dict(arguments)
+        arguments.pop("plan_step", None)
+        if tool_name == "update_plan":
+            plan = getattr(self, "_public_plan", plan_ui.Plan())
+            ok = plan.update(arguments.get("step"), arguments.get("status"))
+            return {"status":"success" if ok else "error", "output":
+                str(arguments.get("note") or "Plan updated") if ok else "Invalid plan step or status"}
         if tool_name not in TOOL_FUNCTIONS:
             return {"status": "error", "output": f"Unknown tool: {tool_name}"}
         ledger = getattr(self, "_ledger", None)
@@ -1053,6 +1061,7 @@ RULES
 
         self.cancel_requested = False
         self._plan_steps = []
+        self._public_plan = plan_ui.Plan()
         thinking.reset(self)
 
         # ALWAYS trim at the start of every turn so we don't accumulate
@@ -1101,6 +1110,10 @@ RULES
             full_response = full_response.replace(
                 analysis_thinking_msg, self._format_analysis_for_user(analysis)
             )
+            self._plan_steps = agentic.parse_plan(analysis)
+            self._public_plan = plan_ui.Plan(self._plan_steps)
+            if self._plan_steps:
+                full_response += self._public_plan.marker() + "\n\n"
             yield full_response
 
             self._plan_steps = agentic.parse_plan(analysis)
@@ -1115,6 +1128,10 @@ RULES
         # Track the current goal for self-evaluation and task state
         self._current_goal = user_message[:200]
         self.context.set_goal(user_message[:200])
+        if self._plan_steps:
+            self.context.set_plan(self._plan_steps)
+            self.messages.append({"role":"user","content":
+                "[Public execution plan] Tag each tool with plan_step (1-based). Use update_plan to mark a step running, done after checking its evidence, or blocked. Do not infer completion from call count. Final-answer steps may be done only when the answer is ready. Plan: " + agentic.plan_checklist(self._plan_steps)})
         _eval_count = 0
         _MAX_EVALS_PER_TURN = 3
         self._turn_evidence = []
@@ -1533,6 +1550,11 @@ RULES
                     break
 
                 tool_name = tc["function"]["name"]
+                selected_step = self._public_plan.select(args.get("plan_step"))
+                if selected_step is not None:
+                    full_response += "[[planstep:" + str(selected_step) + "]]\n"
+                    full_response = plan_ui.replace(full_response, self._public_plan)
+                    yield full_response
                 sig = (tool_name, tc["function"]["arguments"])
                 self._same_call_count = self._same_call_count + 1 if sig == self._last_call_sig else 1
                 self._last_call_sig = sig
@@ -1585,6 +1607,7 @@ RULES
                             result = val
                 elapsed = time.time() - t0
 
+                full_response = plan_ui.replace(full_response, self._public_plan)
                 summary = _summarize_result(result)
                 # Color the badge by status
                 if isinstance(result, dict):
