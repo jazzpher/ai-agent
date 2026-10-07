@@ -1013,6 +1013,8 @@ if __name__ == "__main__":
     if os.environ.get("AGENT_SANDBOX_MODE") == "bubblewrap":
         from kernel_sandbox import available
         print("[sandbox] startup capability:", available(), flush=True)
+        from sandbox_selftest import startup_test
+        startup_test()
     app.launch(**settings, blocked_paths=[
         str(Path(__file__).parent / name)
         for name in (".env", "providers.json", ".agent_logs", ".sandboxes", ".context")
