@@ -35,3 +35,14 @@ def test_plain_messages_keep_code_container():
     assert '#agent-chat .message, #agent-chat .bubble-wrap' in CSS
     assert 'border:0 !important; border-radius:0 !important;' in CSS
     assert '#agent-chat .message pre, #agent-chat .wl-box {border:1px solid' in CSS
+
+
+def test_toggle_choice_recorded_before_stream_hydration():
+    from ui_design import PAGE_JS
+    assert 'workChoices.set(detailKey(detail), !detail.open)' in PAGE_JS
+    assert '}, true);' in PAGE_JS
+
+
+def test_final_attribution_on_separate_paragraph():
+    out=worklog.render_turn('Work\n\nAnswer\n\n🤖 Sumagot: model',SimpleNamespace(_display_final='Answer'))
+    assert 'Answer\n\n🤖 Sumagot:' in out
