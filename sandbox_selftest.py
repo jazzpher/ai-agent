@@ -58,3 +58,9 @@ def startup_test():
         checks=json.loads(result['output'])
         if not all(checks.values()):
             raise RuntimeError('Kernel sandbox startup restrictions failed')
+
+        # Exercise the approved-install policy without installing packages or sending data.
+        network_result=run([sys.executable,'-c',"import socket;from pathlib import Path;socket.socket().close();print('DNS_CONFIG_OK' if Path('/etc/resolv.conf').read_bytes() else 'DNS_CONFIG_EMPTY')"],workspace,sys.prefix,10,network=True)
+        print('[sandbox] approved-network policy:',json.dumps(network_result,sort_keys=True),flush=True)
+        if network_result['status']!='success' or 'DNS_CONFIG_OK' not in network_result['output']:
+            raise RuntimeError('Approved-install network policy failed')
