@@ -215,6 +215,15 @@ footer {display:none !important;}
  #files-button {width:65px; min-width:65px !important;}
 }
 
+/* Plain messages and work sections, with containers retained for code only. */
+#agent-chat .message, #agent-chat .bubble-wrap, #agent-chat .message .prose {background:transparent !important; border:0 !important; border-radius:0 !important; box-shadow:none !important;}
+#agent-chat .task-plan, #agent-chat .turn-work, #agent-chat .wl, #agent-chat .think-body {background:transparent; border:0; border-radius:0; box-shadow:none;}
+#agent-chat .wl-row {border-top:0;}
+#agent-chat .message pre, #agent-chat .wl-box {border:1px solid var(--ws-line); border-radius:8px; background:var(--ws-soft);}
+/* Whole-turn work is expandable, never removed after completion. */
+.turn-work {padding:0; margin:8px 0;}
+.turn-work > summary {cursor:pointer; padding:10px 0; font-size:13px; color:var(--ws-muted);}
+@media(max-width:640px) {.turn-work > summary {font-size:10px;}}
 /* Work log, file cards, quick-choice chips */
 .wl, .fc {border:1px solid var(--ws-line); border-radius:10px; margin:6px 0; background:var(--ws-panel); font-size:13px;}
 .wl > summary, .fc > summary {position:relative; z-index:1; cursor:pointer; padding:9px 12px; display:flex; align-items:center; gap:8px; list-style:none; min-height:36px;}
@@ -387,7 +396,26 @@ PAGE_JS = """
     el.dispatchEvent(new Event('input', {bubbles: true}));
     return true;
   };
+  const workChoices = new Map();
+  const detailKey = (el) => {
+    const messages = [...document.querySelectorAll('#agent-chat .message')];
+    const message = el.closest('.message');
+    const details = [...(message || document).querySelectorAll('details')];
+    const phase = el.classList.contains('turn-work') ? el.querySelector('summary')?.textContent : '';
+    return messages.indexOf(message) + ':' + details.indexOf(el) + ':' + el.className + ':' + phase;
+  };
+  document.addEventListener('click', (e) => {
+    const summary = e.target.closest('summary');
+    const detail = summary?.parentElement;
+    if (detail?.tagName === 'DETAILS' && detail.closest('#agent-chat')) {
+      setTimeout(() => workChoices.set(detailKey(detail), detail.open), 0);
+    }
+  });
   const hydrate = () => {
+    document.querySelectorAll('#agent-chat details').forEach(el => {
+      const key = detailKey(el);
+      if (workChoices.has(key)) el.open = workChoices.get(key);
+    });
     document.querySelectorAll('.fc-artifact').forEach(card => {
       const button = card.querySelector('.fc-open');
       const preview = card.querySelector('.fc-artifact-preview');
