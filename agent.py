@@ -707,7 +707,10 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
         arguments.pop("plan_step", None)
         if tool_name == "update_plan":
             plan = getattr(self, "_public_plan", plan_ui.Plan())
-            ok = plan.update(arguments.get("step"), arguments.get("status"))
+            step = arguments.get("step")
+            if arguments.get("status") == "done" and getattr(self, "_plan_result_status", {}).get(step) in {"error", "blocked"}:
+                return {"status":"error","output":"Cannot mark this step done: its latest command failed. Fix it or mark blocked."}
+            ok = plan.update(step, arguments.get("status"))
             return {"status":"success" if ok else "error", "output":
                 str(arguments.get("note") or "Plan updated") if ok else "Invalid plan step or status"}
         if tool_name not in TOOL_FUNCTIONS:
@@ -1062,6 +1065,7 @@ RULES
         self.cancel_requested = False
         self._plan_steps = []
         self._public_plan = plan_ui.Plan()
+        self._plan_result_status = {}
         thinking.reset(self)
 
         # ALWAYS trim at the start of every turn so we don't accumulate
@@ -1550,7 +1554,7 @@ RULES
                     break
 
                 tool_name = tc["function"]["name"]
-                selected_step = self._public_plan.select(args.get("plan_step"))
+                selected_step = self._public_plan.select(args.get("plan_step", args.get("step") if tool_name == "update_plan" else None))
                 if selected_step is not None:
                     full_response += "[[planstep:" + str(selected_step) + "]]\n"
                     full_response = plan_ui.replace(full_response, self._public_plan)
@@ -1607,6 +1611,10 @@ RULES
                             result = val
                 elapsed = time.time() - t0
 
+                if selected_step is not None and tool_name != "update_plan" and isinstance(result, dict):
+                    self._plan_result_status[selected_step] = result.get("status")
+                    if result.get("status") in {"error", "blocked"}:
+                        self._public_plan.update(selected_step, "blocked")
                 full_response = plan_ui.replace(full_response, self._public_plan)
                 summary = _summarize_result(result)
                 # Color the badge by status
@@ -1804,6 +1812,10 @@ RULES
             yield full_response
 
             if self.cancel_requested:
+                if self._public_plan.active is not None:
+                    self._public_plan.update(self._public_plan.active, "blocked")
+                    full_response = plan_ui.replace(full_response, self._public_plan)
+                    yield full_response
                 break
 
             if len(self.messages) > self.max_context_messages * 2:

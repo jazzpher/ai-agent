@@ -10,7 +10,7 @@ import os
 import re
 
 CATEGORIES = {
-    "run_bash": "Ran commands", "run_python": "Ran commands", "pip_install": "Ran commands",
+    "update_plan": "Plan updates", "run_bash": "Ran commands", "run_python": "Ran commands", "pip_install": "Ran commands",
     "download_file": "Ran commands", "process_image": "Ran commands", "remove_background": "Ran commands",
     "web_search": "Explored", "fetch_page": "Explored", "job_search": "Explored", "image_search": "Explored",
     "read_file": "Explored", "view_file": "Explored", "list_files": "Explored", "recall_step": "Explored",
@@ -198,10 +198,11 @@ def render(text, workspace_dir=None, running=False):
     """Rewrite raw agent text. Idempotent on text without markers."""
     if not text:
         return text
-    text = plan_ui.render(text)
     if ("🔧 **Action:**" not in text and "[[file:" not in text and "[[ask:" not in text):
-        return text
+        return plan_ui.render(text)
     out, pos = [], 0
+    plan_commands = {}
+    has_plan = bool(plan_ui.MARKER.search(text))
     for m in _ACTION.finditer(text):
         start = max(m.start(), pos)
         out.append(text[pos:start])
@@ -217,8 +218,26 @@ def render(text, workspace_dir=None, running=False):
         else:
             pos = (end + len(_END)) if end != -1 else len(text)
         inner_clean = _FILE.sub("", inner)
-        h, left = _block_html(inner_clean, block_running)
-        out.append("\n\n" + h + "\n\n" + (left + "\n" if left else ""))
+        chunks = re.split(r"(\[\[planstep:\d+\]\])", inner_clean)
+        step_id = None
+        if not inner_clean.strip() and block_running:
+            out.append('<div class="wl-run">Working…</div>')
+        for chunk in chunks:
+            marker = plan_ui.STEP_MARKER.fullmatch(chunk)
+            if marker:
+                step_id = int(marker[1])
+                continue
+            if not chunk.strip():
+                if step_id is not None and block_running and has_plan:
+                    plan_commands[step_id] = plan_commands.get(step_id, "") + '<div class="wl-run">Working…</div>'
+                continue
+            h, left = _block_html(chunk, block_running)
+            if step_id is not None and has_plan:
+                plan_commands[step_id] = plan_commands.get(step_id, "") + h
+                if left:
+                    out.append(left + "\n")
+            else:
+                out.append("\n\n" + h + "\n\n" + (left + "\n" if left else ""))
         for fm in _FILE.finditer(inner):
             rel = fm.group(1)
             from file_preview import safe_workspace_path
@@ -227,7 +246,7 @@ def render(text, workspace_dir=None, running=False):
             if card:
                 out.append("\n\n" + card + "\n\n")
     out.append(text[pos:])
-    s = "".join(out)
+    s = plan_ui.render("".join(out), plan_commands)
 
     def _file_sub(m):
         from file_preview import safe_workspace_path

@@ -27,7 +27,7 @@ class Plan:
         value=base64.b64encode(json.dumps(self.steps,ensure_ascii=False).encode()).decode()
         return '[[plan:'+value+']]'
 
-def render_marker(match):
+def render_marker(match, commands=None):
     try:
         steps=json.loads(base64.b64decode(match[1]))
         rows=[]
@@ -36,7 +36,7 @@ def render_marker(match):
         for i,step in enumerate(steps[:10],1):
             status=step.get('status','pending')
             if status not in icons: status='pending'
-            rows.append('<li class="plan-row '+status+'"><span class="plan-icon" aria-hidden="true">'+icons[status]+'</span><div><span class="plan-label">Step '+str(i)+' · '+labels[status]+'</span><div>'+html.escape(str(step.get('text','')),quote=True)+'</div></div></li>')
+            rows.append('<li class="plan-row '+status+'"><span class="plan-icon" aria-hidden="true">'+icons[status]+'</span><div><span class="plan-label">Step '+str(i)+' · '+labels[status]+'</span><div>'+html.escape(str(step.get('text','')),quote=True)+'</div>'+(commands or {}).get(i,'')+'</div></li>')
         return '<section class="task-plan" aria-label="Task plan"><div class="plan-title">Plan</div><ol>'+''.join(rows)+'</ol></section>'
     except (ValueError,TypeError,KeyError):
         return ''
@@ -47,6 +47,6 @@ def replace(text,plan):
         return MARKER.sub(lambda _:plan.marker(),text)
     return text
 
-def render(text):
-    text=MARKER.sub(render_marker,text)
+def render(text, commands=None):
+    text=MARKER.sub(lambda m:render_marker(m,commands),text)
     return STEP_MARKER.sub(lambda m:'<div class="plan-command-label">Commands for step '+m[1]+'</div>',text)
