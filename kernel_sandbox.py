@@ -62,6 +62,8 @@ def available():
                             '--ro-bind', '/lib', '/lib', '--ro-bind', '/lib64', '/lib64',
                             '--symlink', 'usr/bin', '/bin', '--proc', '/proc', '--dev', '/dev',
                             '/bin/true'], capture_output=True, timeout=5)
+        if r.returncode != 0:
+            print("[sandbox] bubblewrap probe failed:", (r.stderr or b"").decode(errors="replace")[:500], flush=True)
         return r.returncode == 0
     except Exception:
         return False
