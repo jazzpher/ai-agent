@@ -978,7 +978,10 @@ RULES
 - If the user said "search the internet" or "make it look like X", call that out in the Plan.
 - Never plan a refusal, a clarifying question or a disclaimer for an ordinary task; plan how to do it. Gray-area or legally risky tasks are done, with a short legal reminder at the end of the final answer. Only requests aimed at harming others (hacking others, fraud, violence, minors) are declined.
 - Do NOT include tool calls or code. Just the analysis.
-- Keep the entire plan under 250 words and 4 steps. Do not repeat the user's requirements at length.
+- The Plan is the public checklist, not a list of UI mechanics. Use short action titles (ideally 3-8 words), not command arguments or long sentences.
+- If the user specifies an exact number of public steps or gives named step titles, preserve that exact count, order and titles. Do not add steps for making a plan, update_plan, status updates or giving a final report.
+- Each numbered public step is a meaningful outcome and may include several commands. Verification belongs inside its relevant step unless the user names it separately.
+- Keep the entire plan under 250 words and 4 steps unless the user explicitly asks for another count. Do not repeat the user's requirements at length.
 - For research: start with 2-4 targeted web searches and 3-6 sources, read primary pages, then synthesize. Do not promise 50/200 postings, frequency statistics or exhaustive coverage without data already available.
 - The current date supplied below is authoritative. Treat the current year as current, not forward-looking; distinguish older published statistics from current postings.
 - A sandbox-unavailable error is a real blocker. KEEP/PASS a clear, honest explanation; never suggest host execution, disabling isolation, switching environments to bypass it, or repeated retries without a change in infrastructure.
@@ -1135,7 +1138,7 @@ RULES
         if self._plan_steps:
             self.context.set_plan(self._plan_steps)
             self.messages.append({"role":"user","content":
-                "[Public execution plan] Tag each tool with plan_step (1-based). Use update_plan to mark a step running, done after checking its evidence, or blocked. Do not infer completion from call count. Final-answer steps may be done only when the answer is ready. Plan: " + agentic.plan_checklist(self._plan_steps)})
+                "[Public execution plan] This numbered checklist is the single source of step IDs. Tag each command with its matching plan_step (1-based). Do not follow a conflicting step ID from another source or attach commands to a row with a different outcome. Use update_plan to mark a step running, done after checking its evidence, or blocked. Do not infer completion from call count. Do not create extra steps for status-update mechanics. Final-answer steps may be done only when the answer is ready. Plan: " + agentic.plan_checklist(self._plan_steps)})
         _eval_count = 0
         _MAX_EVALS_PER_TURN = 3
         self._turn_evidence = []
