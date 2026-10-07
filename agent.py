@@ -1038,16 +1038,10 @@ RULES
                     resp.usage.prompt_tokens or 0,
                     resp.usage.completion_tokens or 0,
                 )
-            return analysis.strip()
+            return plan_ui.align_analysis(analysis.strip(), user_message)
         except Exception as e:
             self._log("analyze_failed", error=str(e))
-            return (
-                f"**Restate:** {user_message[:200]}\n\n"
-                f"**Goal:** Complete the user's request\n\n"
-                f"**Plan:**\n1. Examine the request and any provided files\n"
-                f"2. Proceed step by step using available tools\n"
-                f"3. Verify and report"
-            )
+            return plan_ui.fallback_analysis(user_message)
 
     def _format_analysis_for_user(self, analysis: str) -> str:
         """Format the Pass-1 analysis as a 'task plan' block for the user."""
