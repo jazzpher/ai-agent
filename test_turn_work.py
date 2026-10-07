@@ -39,7 +39,9 @@ def test_plain_messages_keep_code_container():
 
 def test_toggle_choice_recorded_before_stream_hydration():
     from ui_design import PAGE_JS
-    assert 'workChoices.set(detailKey(detail), !detail.open)' in PAGE_JS
+    assert 'workChoices.set(detailKey(detail), desired)' in PAGE_JS
+    assert 'e.preventDefault();' in PAGE_JS
+    assert 'detail.open = desired;' in PAGE_JS
     assert '}, true);' in PAGE_JS
 
 
