@@ -845,10 +845,17 @@ RULES
         After a major action, ask the LLM to evaluate if the action was good.
         Returns one of: "KEEP", "FIX\n...", or "REPLAN\n..."
         """
+        prior_evidence = "\n".join(
+            f"- {name} [{status}]: {out[:700]}"
+            for name, status, out in getattr(self, "_turn_evidence", [])[-8:]
+        ) or "(none)"
         eval_messages = [
             {"role": "system", "content": self._EVALUATE_SYSTEM},
             {"role": "user", "content": (
                 f"**Goal:** {goal}\n\n"
+                f"**Completed actions this turn (includes earlier steps):**\n{prior_evidence}\n\n"
+                "Judge the latest action, not whether one step alone fulfills the entire goal. "
+                "Do not request repeats of successful earlier steps. The final verifier checks the whole goal.\n\n"
                 f"**Action just taken:** {action_summary}\n\n"
                 f"**Result / output:**\n```\n{result_text[:2000]}\n```\n\n"
                 f"Evaluate the action. Is it good enough to proceed, or does it need a fix?"
