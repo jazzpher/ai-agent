@@ -56,7 +56,7 @@ int main(int argc,char **argv) {
  struct sock_fprog policy={.len=size/sizeof(struct sock_filter),.filter=filters};
  if(prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&policy)) fail("seccomp load");
  limit(RLIMIT_AS,536870912);limit(RLIMIT_CPU,60);limit(RLIMIT_FSIZE,16777216);
- limit(RLIMIT_NOFILE,128);limit(RLIMIT_NPROC,64);limit(RLIMIT_CORE,0);
+ limit(RLIMIT_NOFILE,128);limit(RLIMIT_NPROC,256);limit(RLIMIT_CORE,0);
  if(chdir(argv[1])) fail("workspace");
  execvp(argv[6+count],argv+6+count);fail("sandbox exec");
 }

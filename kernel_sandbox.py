@@ -131,7 +131,7 @@ def bubblewrap_run(argv, workspace, venv, timeout, *, network=False, install=Fal
     if not prlimit:
         return {'status':'error','sandbox':'unavailable','output':'Resource limiter unavailable; not run'}
     args = [prlimit, '--as=536870912', '--cpu=60', '--fsize=16777216',
-            '--nofile=128', '--nproc=64', '--core=0', '--'] + args
+            '--nofile=128', '--nproc=256', '--core=0', '--'] + args
     with seccomp_file() as policy, tempfile.TemporaryFile() as output:
         pos = args.index('--', args.index(shutil.which('bwrap')))
         args[pos:pos] = ['--seccomp', str(policy.fileno())]

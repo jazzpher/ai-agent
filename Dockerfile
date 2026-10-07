@@ -5,7 +5,7 @@ RUN gcc -O2 -Wall /tmp/landlock_runner.c -o /tmp/landlock-runner
 
 FROM python:3.11.11-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap libseccomp2 util-linux bash ca-certificates && rm -rf /var/lib/apt/lists/*
-RUN useradd --create-home --uid 1000 agent
+RUN useradd --create-home --uid 62341 agent
 WORKDIR /app
 COPY requirements-render.txt .
 RUN pip install --no-cache-dir -r requirements-render.txt
