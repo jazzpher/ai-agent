@@ -8,4 +8,4 @@ COPY --chown=agent:agent . .
 RUN chown agent:agent /app
 USER agent
 ENV AGENT_HOST=0.0.0.0 AGENT_SANDBOX_MODE=bubblewrap GRADIO_ANALYTICS_ENABLED=False
-CMD ["python", "app.py"]
+CMD ["env", "AGENT_SANDBOX_MODE=bubblewrap", "python", "app.py"]
