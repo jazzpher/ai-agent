@@ -120,12 +120,26 @@ class AgentIntegrationTest(unittest.TestCase):
 class SafeReadonlyTest(unittest.TestCase):
     def test_allowlist_rules(self):
         from approvals import safe_readonly
-        for cmd in ("ls", "ls -la", "cat file.txt", "git status", "git log --oneline",
-                    "python --version", "pip list", "echo hi"):
+        for cmd in ("ls", "ls -la", "ls -la src/app", "pwd", "git status", "git log --oneline",
+                    "git log -n5 --stat", "git diff --cached", "python --version", "pip list",
+                    "pip show gradio"):
             self.assertTrue(safe_readonly(cmd), cmd)
-        for cmd in ("", "ls; rm -rf /", "ls && del x", "cat x > y", "echo `id`",
-                    "ls | wc", "git push", "del /s C:\\", "rm -rf build", "$(id)"):
-            self.assertFalse(safe_readonly(cmd), cmd)
+
+    def test_shell_tricks_and_unsafe_forms_are_refused(self):
+        from approvals import safe_readonly
+        bad = ["", "ls; rm -rf /", "ls && del x", "cat x > y", "echo `id`", "ls | wc", "git push",
+               "del /s C:\\", "rm -rf build", "$(id)",
+               "echo $(touch /tmp/pwned)", "ls\ntouch /tmp/x", "ls\r\ntouch x", "echo ${HOME}",
+               "ls $(id)", "ls (id)", "ls {a,b}", "ls 'x'", 'ls "x"', "ls ~", "ls *",
+               "cat .env", "cat ~/.ssh/id_rsa", "head -n1 /etc/passwd", "tail -f x",
+               "type secret.txt", "echo hi", "file -C", "which python", "wc -l x",
+               "git diff --output=/tmp/o", "git log --output=x", "git log --outp=x",
+               "git diff --no-index /etc/passwd x", "git diff --ext-diff", "git -c core.pager=x log",
+               "git branch -D main", "git branch", "git status --ignored -u",
+               "hostname evil", "date -s 2020-01-01", "python -c 1", "pip install x", "pip show -f x",
+               "ls -la --color=always", "whoami root"]
+        for cmd in bad:
+            self.assertFalse(safe_readonly(cmd), repr(cmd))
 
     def test_needs_approval_skips_only_safe_bash(self):
         from approvals import needs_approval

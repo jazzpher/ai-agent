@@ -21,22 +21,37 @@ def approval_timeout() -> float:
 
 ISOLATED_MODES = {"docker", "bubblewrap", "landlock"}
 
-# Read-only commands that never need a prompt, even without isolation. A single
-# invocation only: no chaining, pipes, redirects or substitution, so nothing can
-# ride along behind an allowed prefix.
-SAFE_READ_ONLY = re.compile(
-    r"(ls|dir|pwd|cat|head|tail|wc|file|which|echo|type|whoami|hostname|date)\b"
-    r"|python(3)?\s+(--version|-V)\b"
-    r"|pip(3)?\s+(list|show|--version)\b"
-    r"|git\s+(status|log|diff|branch)\b"
-)
-SHELL_META = re.compile(r"[;&|`<>]")
+# Commands that skip the prompt even without isolation. Deliberately tiny: one
+# plain invocation made only of safe characters, a fixed command word and, for
+# git, a fixed set of flags. No shell syntax (quotes, $, (), {}, newlines,
+# pipes, redirects, ~, globs) and nothing that reads file contents or secrets.
+_PLAIN = re.compile(r"[A-Za-z0-9_ ./=:@%+,-]+")
+_LS_FLAGS = re.compile(r"-[lahtrRS1F]+")
+_GIT_FLAGS = {
+    "--oneline", "--stat", "--short", "--cached", "--staged", "--name-only",
+    "--name-status", "--graph", "--porcelain", "--no-color", "--abbrev-commit",
+    "-p", "-s", "-b", "--shortstat",
+}
+_GIT_COUNT = re.compile(r"-n?\d{1,3}")
+
 
 def safe_readonly(command: str) -> bool:
     cmd = (command or "").strip()
-    if not cmd or SHELL_META.search(cmd):
+    if not cmd or not _PLAIN.fullmatch(cmd):
         return False
-    return bool(SAFE_READ_ONLY.match(cmd.lower()))
+    tokens = cmd.split()
+    head, args = tokens[0].lower(), tokens[1:]
+    if head in ("pwd", "whoami"):
+        return not args
+    if head in ("ls", "dir"):
+        return all(_LS_FLAGS.fullmatch(a) or not a.startswith("-") for a in args)
+    if head in ("python", "python3"):
+        return args in (["--version"], ["-V"])
+    if head in ("pip", "pip3"):
+        return args == ["list"] or args == ["--version"] or (len(args) == 2 and args[0] == "show" and not args[1].startswith("-"))
+    if head == "git" and args and args[0] in ("status", "log", "diff"):
+        return all(a in _GIT_FLAGS or _GIT_COUNT.fullmatch(a) or not a.startswith("-") for a in args[1:])
+    return False
 
 
 def approval_mode() -> str:
