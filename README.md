@@ -29,11 +29,13 @@ Ang agent ay naka-**sandbox** para iwas aksidente:
 
 | Protection | Ano ang ginagawa |
 |---|---|
-| 📦 **Temporary Sandbox** | All code runs in ephemeral venv/container — host untouched |
+| 📦 **Temporary Sandbox** | Docker / bubblewrap: real isolation. venv (no Docker): packages only, runs on your PC, so **every command asks first** |
+| 🙈 **Secrets hidden** | API keys and the app login are removed from the environment of every command |
 | 🔒 **File Sandbox** | File writes ONLY sa `workspace/` folder |
 | 🚫 **Command Blocklist** | Awtomatikong bina-block ang mga dangerous commands |
 | ⚠️ **Risky Command Warnings** | May warning kapag nag-run ng `del`, `rmdir`, etc. |
 | 🔐 **Credential Protection** | Hindi pwede mag-read ng `.ssh/id_rsa`, `.aws/credentials`, etc. |
+| 📂 **Read scope** | `read_file`/`view_file` workspace lang (uploads are copied there). `AGENT_READ_OUTSIDE_WORKSPACE=1` to allow more |
 | 🛤️ **Path Traversal Prevention** | Hindi pwede gumamit ng `../../` para umakyat sa system directories |
 | 📦 **Package Validation** | Bina-block ang known malicious/typosquat Python packages |
 | 🐍 **Python Code Analysis** | Flagged ang `eval()`, `exec()`, `os.system()` at iba pang risky patterns |
@@ -119,7 +121,7 @@ User: "Install matplotlib"
 Session ends (close browser / timeout / clear)
   → Sandbox destroyed
   → matplotlib is gone
-  → Host machine untouched ✅
+  → Host machine untouched ✅ (Docker/bubblewrap only; venv mode runs on your PC)
 ```
 
 ### Pre-installed Packages (Always Available):
@@ -183,7 +185,8 @@ python test_safety.py
 - Ang workspace folder lang ang pwedeng galawin ng agent
 - **No step or time limit** per message. A turn ends when the model finishes, you press Stop, or the same tool call repeats 5 times in a row. Optional caps: `AGENT_MAX_ITERATIONS`, `AGENT_MAX_SECONDS`
 - **Self-evaluation** is capped at 3 per turn to save tokens
-- Installed packages are **temporary** — host machine is never modified
+- Installed packages are **temporary**. Without Docker, commands still run on your PC: read each approval
+- `AGENT_APPROVAL`: `auto` (default: every command asks without isolation), `risky` (only risky commands ask), `on`, `off`
 
 ## 🐛 Troubleshooting
 
@@ -311,7 +314,7 @@ JSONL session logs remain separate. No API key is included in this change.
 
 ## Harness safety and smarts
 
-- **Approval gate**: without Docker, risky commands and every `pip_install` pause for Approve/Deny in the UI (120s no answer = deny). `AGENT_APPROVAL=auto|on|off` (default auto), `AGENT_APPROVAL_TIMEOUT` seconds. Blocked commands stay blocked.
+- **Approval gate**: without Docker or bubblewrap, every `run_bash`, `run_python` and `pip_install` pauses for Approve/Deny in the UI (120s no answer = deny). `AGENT_APPROVAL=auto|risky|on|off` (default auto; `risky` = only risky commands ask), `AGENT_APPROVAL_TIMEOUT` seconds. Blocked commands stay blocked.
 - **Answer check**: after tool use, the model checks its final answer against the tool results (max 2 fix rounds). `AGENT_VERIFY=off` disables it.
 - **Vision flag**: each provider slot has a Vision checkbox. Images from `view_file` are sent only when it is on.
 - **Models + benchmark**: "Fetch models" lists `/models`; "Benchmark (5 calls)" runs five small requests and shows pass/fail and time. Both only run when you click.

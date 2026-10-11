@@ -9,11 +9,19 @@ from approvals import ApprovalGate, needs_approval
 
 
 class NeedsApprovalTest(unittest.TestCase):
-    def test_risky_without_docker_asks(self):
+    def test_everything_asks_on_unisolated_host(self):
         with patch.dict(os.environ, {"AGENT_APPROVAL": "auto"}):
             self.assertTrue(needs_approval("run_bash", "risky", "venv"))
+            self.assertTrue(needs_approval("run_bash", "safe", "venv"))
+            self.assertTrue(needs_approval("run_python", "safe", "venv"))
             self.assertFalse(needs_approval("run_bash", "risky", "docker"))
+            self.assertFalse(needs_approval("run_bash", "safe", "bubblewrap"))
+
+    def test_risky_mode_keeps_old_behaviour(self):
+        with patch.dict(os.environ, {"AGENT_APPROVAL": "risky"}):
+            self.assertTrue(needs_approval("run_bash", "risky", "venv"))
             self.assertFalse(needs_approval("run_bash", "safe", "venv"))
+            self.assertTrue(needs_approval("pip_install", "safe", "venv"))
 
     def test_pip_install_always_asks_without_docker(self):
         with patch.dict(os.environ, {"AGENT_APPROVAL": "auto"}):
@@ -97,7 +105,7 @@ class AgentIntegrationTest(unittest.TestCase):
             pip = a._approval_prompt("pip_install", {"package": "rich"})
         self.assertIsNotNone(risky)
         self.assertIn("rm -rf", risky[0])
-        self.assertIsNone(safe)
+        self.assertIsNotNone(safe)          # host mode: even `ls` is shown first
         self.assertIsNone(blocked)
         self.assertIsNotNone(pip)
 

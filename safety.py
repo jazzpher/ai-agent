@@ -285,9 +285,16 @@ class SafetyGuard:
         re.compile(r'\\SAM\b', re.IGNORECASE),
     ]
 
+    @staticmethod
+    def reads_outside_workspace() -> bool:
+        """Off by default: the agent reads only its workspace (uploads are copied
+        there). AGENT_READ_OUTSIDE_WORKSPACE=1 restores reading the rest of the
+        disk (protected and credential paths stay blocked)."""
+        return os.environ.get("AGENT_READ_OUTSIDE_WORKSPACE", "").strip().lower() in ("1", "true", "yes", "on")
+
     def validate_file_read(self, path: str) -> dict:
         try:
-            resolved = self.validate_path(path, allow_workspace_only=False)
+            resolved = self.validate_path(path, allow_workspace_only=not self.reads_outside_workspace())
         except SafetyViolation as e:
             return {"safe": False, "risk_level": "blocked", "message": str(e)}
 
