@@ -116,7 +116,7 @@ def read_file(path: str, max_bytes: int = MAX_FILE_READ_BYTES, offset: int = 0,
         return {"status": "blocked", "output": check["message"], "risk_level": "blocked"}
 
     try:
-        resolved = guard.validate_path(path, allow_workspace_only=False, must_exist=True)
+        resolved = guard.validate_path(path, allow_workspace_only=not guard.reads_outside_workspace(), must_exist=True)
 
         if os.path.isdir(resolved):
             return {
@@ -206,7 +206,7 @@ def view_file(path: str, session_id: str = None) -> dict:
         return {"status": "blocked", "output": check["message"], "risk_level": "blocked"}
 
     try:
-        resolved = guard.validate_path(path, allow_workspace_only=False, must_exist=True)
+        resolved = guard.validate_path(path, allow_workspace_only=not guard.reads_outside_workspace(), must_exist=True)
 
         if os.path.isdir(resolved):
             return {

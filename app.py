@@ -138,11 +138,13 @@ def format_sandbox_status(agent) -> str:
         if len(pkgs) > 5:
             pkg_preview += f" (+{len(pkgs) - 5} more)"
         return (
-            f"**Sandbox: ACTIVE (venv mode)**\n"
+            f"**⚠️ No isolation (venv mode): runs on this PC**\n"
             f"- Session: `{status.get('session_id', '?')}`\n"
             f"- Uptime: {status.get('uptime_seconds', 0)}s\n"
             f"- Packages: {pkg_preview or 'installing...'}\n\n"
-            f"A venv isolates packages, not files or secrets. Commands can modify this server.\n\n"
+            f"A venv isolates packages only. Commands run on this PC, so every command, "
+            f"script and install asks you first. API keys are hidden from them, and file "
+            f"reads stay in the workspace. Install Docker Desktop for real isolation.\n\n"
             + approval_warning()
         )
     else:

@@ -12,6 +12,7 @@ Both modes ensure:
 """
 
 import os
+import re
 import sys
 import json
 import subprocess
@@ -40,6 +41,25 @@ def missing_core_packages() -> list[str]:
         if importlib.util.find_spec(mod) is None:
             out.append(pkg)
     return out
+
+
+_SECRET_ENV = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|COOKIE|SESSION)", re.I)
+_SECRET_EXACT = {"AGENT_USERNAME", "AGENT_PASSWORD", "AWS_PROFILE", "GH_HOST"}
+
+
+def host_env(venv_path: str, python_path: str) -> dict:
+    """Environment for host (venv mode) children: everything except secrets.
+
+    The app's own provider keys (NVIDIA_API_KEY, GEMINI_API_KEY, ...) and
+    login live in this process's environment; a command the model writes
+    must never be able to print them."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in _SECRET_EXACT and not _SECRET_ENV.search(k)}
+    venv_bin = os.path.dirname(python_path)
+    env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
+    env["VIRTUAL_ENV"] = venv_path
+    env["PYTHONNOUSERSITE"] = "1"
+    return env
 
 
 class SessionSandbox:
@@ -277,6 +297,7 @@ class SessionSandbox:
                  "--quiet", "--no-cache-dir"] + pkg_list,
                 capture_output=True, text=True,
                 timeout=timeout,
+                env=host_env(self._venv_path, self._python_path),
                 encoding="utf-8", errors="replace",
             )
 
@@ -383,10 +404,7 @@ class SessionSandbox:
     def _host_exec(self, command: str, timeout: int) -> dict:
         """Execute on host using the ephemeral venv."""
         try:
-            env = os.environ.copy()
-            venv_bin = os.path.dirname(self._python_path)
-            env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
-            env["VIRTUAL_ENV"] = self._venv_path
+            env = host_env(self._venv_path, self._python_path)
 
             result = subprocess.run(
                 command, shell=True,
@@ -417,10 +435,7 @@ class SessionSandbox:
     def _host_python(self, code: str, timeout: int) -> dict:
         """Run Python code using the ephemeral venv's interpreter."""
         try:
-            env = os.environ.copy()
-            venv_bin = os.path.dirname(self._python_path)
-            env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
-            env["VIRTUAL_ENV"] = self._venv_path
+            env = host_env(self._venv_path, self._python_path)
 
             result = subprocess.run(
                 [self._python_path, "-c", code],
