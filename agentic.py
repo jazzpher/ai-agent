@@ -71,7 +71,7 @@ def _write(path: str, lines: list) -> None:
 
 
 def memory_action(path: str, action: str, text: str = "") -> dict:
-    """add / list / forget on the memory file. Never stores things that look like keys."""
+    """add / list / search / forget on the memory file. Never stores things that look like keys."""
     action = (action or "").strip().lower()
     text = " ".join((text or "").split())
     with _LOCK:
@@ -91,6 +91,11 @@ def memory_action(path: str, action: str, text: str = "") -> dict:
                 return {"status": "error", "output": f"Memory full ({MAX_MEMORY_ITEMS}). Forget something first."}
             _write(path, lines + [f"- {text}"])
             return {"status": "success", "output": f"Remembered: {text}"}
+        if action == "search":
+            if not text:
+                return {"status": "error", "output": "Give what to look for in `text`."}
+            hits = [ln for ln in facts if text.lower() in ln.lower()]
+            return {"status": "success", "output": "\n".join(hits) or f"(no memory item matches: {text})"}
         if action == "forget":
             if not text:
                 return {"status": "error", "output": "Give part of the fact to forget in `text`."}
@@ -99,4 +104,4 @@ def memory_action(path: str, action: str, text: str = "") -> dict:
             if removed:
                 _write(path, keep)
             return {"status": "success", "output": f"Forgot {removed} item(s)."}
-    return {"status": "error", "output": "action must be add, list or forget."}
+    return {"status": "error", "output": "action must be add, list, search or forget."}

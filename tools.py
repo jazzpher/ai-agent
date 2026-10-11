@@ -42,7 +42,7 @@ def recall_step(step_id: int, session_id: str = None) -> dict:
 
 
 def memory(action: str, text: str = "", session_id: str = None) -> dict:
-    """Small persistent memory (add / list / forget) stored in the workspace MEMORY.md."""
+    """Small persistent memory (add / list / search / forget) stored in the workspace MEMORY.md."""
     from agentic import memory_action
     from config import MEMORY_FILE
     return memory_action(MEMORY_FILE, action, text)
@@ -301,7 +301,7 @@ try:
             print()
 except ImportError:
     try:
-        from PyPDF2 import PdfReader
+        from pypdf import PdfReader
         reader = PdfReader({safe_path})
         for i, page in enumerate(reader.pages[:20]):
             text = page.extract_text() or ''
@@ -1310,14 +1310,14 @@ TOOL_DEFINITIONS = [
             "description": (
                 "Persistent memory across chats. action=add saves one short durable fact or preference "
                 "the user stated or a lesson that will help later (never keys or passwords); "
-                "action=list shows saved facts; action=forget removes facts containing `text`. "
+                "action=list shows saved facts; action=search returns only facts matching `text`; action=forget removes facts containing `text`. "
                 "Saved facts are loaded into every new turn. On the free host the memory may reset on restart."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["add", "list", "forget"]},
-                    "text": {"type": "string", "description": "The fact (add) or a fragment to remove (forget)."},
+                    "action": {"type": "string", "enum": ["add", "list", "search", "forget"]},
+                    "text": {"type": "string", "description": "The fact (add), a search keyword (search), or a fragment to remove (forget)."},
                 },
                 "required": ["action"],
             },

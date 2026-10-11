@@ -671,7 +671,8 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
             if not check.get("safe", True):
                 return None  # blocked stays blocked; the tool reports it
             mode = session_manager.get_or_create(self.session_id).mode
-            if needs_approval(tool_name, check.get("risk_level", "safe"), mode):
+            cmd = args.get("command", "") if tool_name == "run_bash" else ""
+            if needs_approval(tool_name, check.get("risk_level", "safe"), mode, command=cmd):
                 return f"{tool_name}: {str(shown)[:500]}", mode
         except Exception as e:
             self._log("approval_check_failed", error=type(e).__name__)
@@ -876,7 +877,6 @@ RULES
                 f"Evaluate the action. Is it good enough to proceed, or does it need a fix?"
             )},
         ]
-        supports_reasoning = _model_supports_reasoning(self.model)
         kwargs = dict(
             model=self.model,
             messages=eval_messages,
@@ -1010,7 +1010,6 @@ RULES
             {"role": "user", "content": prompt_content},
         ]
 
-        supports_reasoning = _model_supports_reasoning(self.model)
         kwargs = dict(
             model=self.model,
             messages=analyze_messages,
@@ -1263,7 +1262,6 @@ RULES
                         yield full_response
                         client = self._get_client()
                         kwargs["model"] = self.model
-                        supports_reasoning = _model_supports_reasoning(self.model)
                         kwargs.pop("extra_body", None)
                         if self._thinking_body():
                             kwargs["extra_body"] = self._thinking_body()

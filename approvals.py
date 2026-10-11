@@ -5,6 +5,7 @@ the UI (or until the timeout, which counts as a denial). The gate holds only
 the command text shown to the user; it stores no keys.
 """
 import os
+import re
 import threading
 import time
 
@@ -20,6 +21,23 @@ def approval_timeout() -> float:
 
 ISOLATED_MODES = {"docker", "bubblewrap", "landlock"}
 
+# Read-only commands that never need a prompt, even without isolation. A single
+# invocation only: no chaining, pipes, redirects or substitution, so nothing can
+# ride along behind an allowed prefix.
+SAFE_READ_ONLY = re.compile(
+    r"(ls|dir|pwd|cat|head|tail|wc|file|which|echo|type|whoami|hostname|date)\b"
+    r"|python(3)?\s+(--version|-V)\b"
+    r"|pip(3)?\s+(list|show|--version)\b"
+    r"|git\s+(status|log|diff|branch)\b"
+)
+SHELL_META = re.compile(r"[;&|`<>]")
+
+def safe_readonly(command: str) -> bool:
+    cmd = (command or "").strip()
+    if not cmd or SHELL_META.search(cmd):
+        return False
+    return bool(SAFE_READ_ONLY.match(cmd.lower()))
+
 
 def approval_mode() -> str:
     """auto (default) = without isolation every command/code/install asks; with
@@ -30,7 +48,8 @@ def approval_mode() -> str:
     return mode if mode in ("auto", "risky", "on", "off") else "auto"
 
 
-def needs_approval(tool_name: str, risk_level: str, sandbox_mode: str) -> bool:
+def needs_approval(tool_name: str, risk_level: str, sandbox_mode: str,
+                   command: str = "") -> bool:
     """Pure decision. Blocked commands never reach here; they stay blocked."""
     if tool_name not in APPROVAL_TOOLS:
         return False
@@ -39,7 +58,8 @@ def needs_approval(tool_name: str, risk_level: str, sandbox_mode: str) -> bool:
         return False
     isolated = sandbox_mode in ISOLATED_MODES
     if mode == "auto" and not isolated:
-        return True   # runs on the real PC: the user sees every command first
+        # venv mode shows every command first, except known read-only safe ones.
+        return tool_name != "run_bash" or risk_level != "safe" or not safe_readonly(command)
     if tool_name == "pip_install":
         risk_level = "risky"  # installing code is always worth a look without isolation
     if risk_level != "risky":

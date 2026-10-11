@@ -3,10 +3,12 @@
 The file stays as a cache and as the fallback, so memory never breaks if the database is
 unreachable. The database is the source of truth when it answers. Never logs the URL.
 """
+import logging
 import os
 
 TABLE = "agent_memory"
 _ready = False
+log = logging.getLogger(__name__)
 
 
 def db_url() -> str:
@@ -40,7 +42,8 @@ def db_read():
             _ensure(conn)
             rows = conn.execute(f"SELECT line FROM {TABLE} ORDER BY pos").fetchall()
         return [r[0] for r in rows]
-    except Exception:
+    except Exception:  # noqa: BLE001 - fallback below, but never silently
+        log.warning("memory db read failed, using file", exc_info=True)
         return None
 
 
@@ -55,7 +58,8 @@ def db_write(lines) -> bool:
                 for i, ln in enumerate(lines):
                     conn.execute(f"INSERT INTO {TABLE} (pos, line) VALUES (%s, %s)", (i, ln))
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001 - fallback below, but never silently
+        log.warning("memory db write failed, using file", exc_info=True)
         return False
 
 

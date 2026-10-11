@@ -105,7 +105,7 @@ class AgentIntegrationTest(unittest.TestCase):
             pip = a._approval_prompt("pip_install", {"package": "rich"})
         self.assertIsNotNone(risky)
         self.assertIn("rm -rf", risky[0])
-        self.assertIsNotNone(safe)          # host mode: even `ls` is shown first
+        self.assertIsNone(safe)             # read-only allowlist: `ls` runs without a prompt
         self.assertIsNone(blocked)
         self.assertIsNotNone(pip)
 
@@ -115,6 +115,25 @@ class AgentIntegrationTest(unittest.TestCase):
         with patch.dict(os.environ, {"AGENT_APPROVAL": "auto"}), \
              patch.object(agent_mod.session_manager, "get_or_create", return_value=Sbx()):
             self.assertIsNone(a._approval_prompt("run_bash", {"command": "rm -rf ./build"}))
+
+
+class SafeReadonlyTest(unittest.TestCase):
+    def test_allowlist_rules(self):
+        from approvals import safe_readonly
+        for cmd in ("ls", "ls -la", "cat file.txt", "git status", "git log --oneline",
+                    "python --version", "pip list", "echo hi"):
+            self.assertTrue(safe_readonly(cmd), cmd)
+        for cmd in ("", "ls; rm -rf /", "ls && del x", "cat x > y", "echo `id`",
+                    "ls | wc", "git push", "del /s C:\\", "rm -rf build", "$(id)"):
+            self.assertFalse(safe_readonly(cmd), cmd)
+
+    def test_needs_approval_skips_only_safe_bash(self):
+        from approvals import needs_approval
+        self.assertFalse(needs_approval("run_bash", "safe", "venv", command="git status"))
+        self.assertTrue(needs_approval("run_bash", "safe", "venv", command="rm -rf x"))
+        self.assertTrue(needs_approval("run_bash", "risky", "venv", command="ls"))
+        self.assertTrue(needs_approval("pip_install", "risky", "venv"))
+        self.assertFalse(needs_approval("run_bash", "safe", "docker", command="rm -rf x"))
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ laptop. For real isolation, run inside Docker / Windows Sandbox / a VM.
 """
 import os
 import re
+from typing import ClassVar
 import platform
 import shlex
 from config import WORKSPACE_DIR
@@ -32,7 +33,7 @@ class SafetyGuard:
     # DANGEROUS COMMANDS - Blocklist
     # ===========================================================
 
-    BLOCKED_COMMANDS = [
+    BLOCKED_COMMANDS: ClassVar[list] = [
         # Windows destructive commands
         r'\bformat\s+[a-zA-Z]:',
         r'\bdel\s+/[sS]\s+[a-zA-Z]:\\',
@@ -73,7 +74,7 @@ class SafetyGuard:
         r'\bFromBase64String\b',
     ]
 
-    RISKY_COMMANDS = [
+    RISKY_COMMANDS: ClassVar[list] = [
         r'\brm\b',
         r'\bdel\b',
         r'\brmdir\b',
@@ -97,7 +98,7 @@ class SafetyGuard:
     # PROTECTED DIRECTORIES
     # ===========================================================
 
-    PROTECTED_PATHS_WINDOWS = [
+    PROTECTED_PATHS_WINDOWS: ClassVar[list] = [
         r'C:\Windows',
         r'C:\Program Files',
         r'C:\Program Files (x86)',
@@ -109,13 +110,13 @@ class SafetyGuard:
         r'C:\ntldr',
     ]
 
-    PROTECTED_PATHS_UNIX = [
+    PROTECTED_PATHS_UNIX: ClassVar[list] = [
         '/bin', '/sbin', '/usr/bin', '/usr/sbin',
         '/etc', '/boot', '/dev', '/proc', '/sys',
         '/var/log', '/root',
     ]
 
-    PROTECTED_EXTENSIONS = [
+    PROTECTED_EXTENSIONS: ClassVar[list] = [
         '.sys', '.dll', '.exe', '.msi',
         '.reg',
         '.bat', '.cmd',
@@ -123,7 +124,7 @@ class SafetyGuard:
     ]
 
     # Known dangerous / typosquat pip packages
-    KNOWN_BAD_PACKAGES = {
+    KNOWN_BAD_PACKAGES: ClassVar[set] = {
         'colourama', 'python3-dateutil', 'jeIlyfish', 'python-binance',
         'cryptocode', 'colorama-real', 'requirements', 'setup.py',
         'libpeshka', 'libprocesshider', 'windows-glass', 'win32api-loader',
@@ -274,7 +275,7 @@ class SafetyGuard:
     # FILE READ VALIDATION
     # ===========================================================
 
-    SENSITIVE_PATTERNS = [
+    SENSITIVE_PATTERNS: ClassVar[list] = [
         re.compile(r'\.ssh[/\\](id_rsa|id_ed25519|authorized_keys)', re.IGNORECASE),
         re.compile(r'\.aws[/\\]credentials', re.IGNORECASE),
         re.compile(r'\.git[/\\]credentials', re.IGNORECASE),
@@ -355,7 +356,7 @@ class SafetyGuard:
     # PYTHON CODE VALIDATION (best-effort, NOT a real sandbox)
     # ===========================================================
 
-    DANGEROUS_PY_PATTERNS = [
+    DANGEROUS_PY_PATTERNS: ClassVar[list] = [
         (re.compile(r'\bos\.system\s*\('), "os.system()"),
         (re.compile(r'\bsubprocess\.[A-Za-z_]*\(.*shell\s*=\s*True', re.IGNORECASE), "subprocess(shell=True)"),
         (re.compile(r'(^|[^.\w])eval\s*\('), "eval()"),
