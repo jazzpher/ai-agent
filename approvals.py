@@ -18,10 +18,16 @@ def approval_timeout() -> float:
         return 120.0
 
 
+ISOLATED_MODES = {"docker", "bubblewrap", "landlock"}
+
+
 def approval_mode() -> str:
-    """auto = ask only without Docker (default), on = always ask, off = never."""
+    """auto (default) = without isolation every command/code/install asks; with
+    isolation only pip_install on kernel sandboxes asks.
+    risky = old behaviour: without isolation only risky commands ask.
+    on = risky commands always ask, even isolated. off = never ask."""
     mode = os.environ.get("AGENT_APPROVAL", "auto").strip().lower()
-    return mode if mode in ("auto", "on", "off") else "auto"
+    return mode if mode in ("auto", "risky", "on", "off") else "auto"
 
 
 def needs_approval(tool_name: str, risk_level: str, sandbox_mode: str) -> bool:
@@ -31,11 +37,14 @@ def needs_approval(tool_name: str, risk_level: str, sandbox_mode: str) -> bool:
     mode = approval_mode()
     if mode == "off":
         return False
+    isolated = sandbox_mode in ISOLATED_MODES
+    if mode == "auto" and not isolated:
+        return True   # runs on the real PC: the user sees every command first
     if tool_name == "pip_install":
         risk_level = "risky"  # installing code is always worth a look without isolation
     if risk_level != "risky":
         return False
-    return mode == "on" or (tool_name == "pip_install" and sandbox_mode in {"bubblewrap", "landlock"}) or sandbox_mode not in {"docker", "bubblewrap", "landlock"}
+    return mode == "on" or (tool_name == "pip_install" and sandbox_mode in {"bubblewrap", "landlock"}) or not isolated
 
 
 class ApprovalGate:
