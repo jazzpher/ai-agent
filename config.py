@@ -28,7 +28,13 @@ DEFAULT_MAX_TOKENS = 8192
 DEFAULT_TEMPERATURE = 0.3
 
 # Workspace
-WORKSPACE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
+# The web UI works in the app's own workspace folder. The terminal agent
+# (cli.py) sets AGENT_WORKSPACE to the folder it was started in, so tools,
+# the sandbox and the safety guard work there instead.
+APP_WORKSPACE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
+os.makedirs(APP_WORKSPACE_DIR, exist_ok=True)
+_ENV_WORKSPACE = os.environ.get("AGENT_WORKSPACE", "").strip()
+WORKSPACE_DIR = os.path.realpath(_ENV_WORKSPACE) if _ENV_WORKSPACE else APP_WORKSPACE_DIR
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
 
 # File handling
@@ -55,7 +61,8 @@ REASONING_CAPABLE_MODELS = (
 )
 
 # Memory file lives in the workspace so the agent can read/edit it
-MEMORY_FILE = os.path.join(WORKSPACE_DIR, "MEMORY.md")
+# (always the app's workspace, so memory follows the user into any project folder)
+MEMORY_FILE = os.path.join(APP_WORKSPACE_DIR, "MEMORY.md")
 
 # Per-session log file (JSONL - one record per line)
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".agent_logs")
@@ -74,7 +81,7 @@ CONTEXT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".context
 os.makedirs(CONTEXT_DIR, exist_ok=True)
 
 # Facts file (L1 atomic facts extracted from conversations)
-FACTS_FILE = os.path.join(WORKSPACE_DIR, ".facts")
+FACTS_FILE = os.path.join(APP_WORKSPACE_DIR, ".facts")
 
 # Max chars for tool result summaries injected into context
 MAX_SUMMARY_CHARS = 200

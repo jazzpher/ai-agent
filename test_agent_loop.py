@@ -96,6 +96,34 @@ class ApprovalLoopTest(unittest.TestCase):
         tool_msgs = [m for m in a.messages if m.get("role") == "tool"]
         self.assertIn("denied", tool_msgs[-1]["content"])
 
+    def test_denial_ends_turn_without_workaround(self):
+        # After a "no" the model must not reach the same result with another tool.
+        client = FakeClient([("tool", "run_bash", {"command": "touch flag.txt"}),
+                             ("tool", "write_file", {"path": "flag.txt", "content": "x"}),
+                             ("text", "done")])
+        a = make_agent(client)
+        patch.object(agent_mod.session_manager, "get_or_create", return_value=Sbx("venv")).start()
+        executed = []
+        patch.dict(agent_mod.TOOL_FUNCTIONS, {
+            "run_bash": lambda **kw: executed.append(("run_bash", kw)) or {"status": "success", "output": "ran"},
+            "write_file": lambda **kw: executed.append(("write_file", kw)) or {"status": "success", "output": "wrote"},
+        }).start()
+
+        def responder():
+            for _ in range(100):
+                if gate.pending(a.session_id):
+                    gate.answer(a.session_id, False)
+                    return
+                time.sleep(0.05)
+        t = threading.Thread(target=responder)
+        t.start()
+        with patch.dict(os.environ, {"AGENT_APPROVAL": "auto"}):
+            out = run(a)
+        t.join()
+        self.assertEqual(executed, [])
+        self.assertIn("Tinanggihan", out)
+        self.assertIn("denied", a.messages[-1]["content"])
+
 
 class VerifyLoopTest(unittest.TestCase):
     def tearDown(self):
