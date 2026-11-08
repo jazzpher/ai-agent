@@ -11,6 +11,9 @@ jobs:
     env:
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       PYTHONUNBUFFERED: "1"
+      # no Docker, like a laptop without it: every command asks first
+      AGENT_SANDBOX_MODE: venv
+      AGENT_APPROVAL: auto
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,6 +29,7 @@ jobs:
           echo "----- hello.py"; cat /tmp/proj/hello.py
           python /tmp/proj/hello.py | tee /tmp/run.txt
           grep -q "hi from cli" /tmp/run.txt
+          echo "----- approvals asked: $(grep -c 'approve?' /tmp/approve.log)"
           grep -q "approve?" /tmp/approve.log
       - name: deny path (bash denied)
         run: |
