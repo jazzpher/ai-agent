@@ -140,7 +140,8 @@ class CompactTest(unittest.TestCase):
         self.assertLess(res.after, 6000 * 0.75)
         last = res.messages[-1]["content"]
         self.assertNotIn("chars cut at compaction", last)  # the latest result stays whole
-        self.assertTrue(any("chars cut at compaction" in str(m.get("content")) for m in res.messages[3:-1]))
+        # old big results are folded into the summary, leaving headroom below the trigger
+        self.assertFalse(compaction.needs_compaction(res.messages))
 
     def test_prompt_is_bounded(self):
         msgs = history(200, big=1100)
@@ -187,3 +188,41 @@ class AgentLoopCompactionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TargetTest(unittest.TestCase):
+    """A compaction leaves real headroom, so the next steps don't compact again."""
+
+    def _history(self, steps=24, size=1400):
+        msgs = [{"role": "system", "content": "sys"},
+                {"role": "user", "content": "build the inventory package"}]
+        for i in range(steps):
+            msgs.append({"role": "assistant", "content": "",
+                         "tool_calls": [{"id": f"c{i}", "type": "function",
+                                         "function": {"name": "read_file", "arguments": "{}"}}]})
+            msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": f"out{i} " + "x" * size})
+        return msgs
+
+    def test_shrinks_to_target_not_just_under_trigger(self):
+        import compaction as c
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"AGENT_CONTEXT_TOKENS": "12000",
+                                          "AGENT_COMPACT_KEEP": "6"}):
+            msgs = self._history()
+            while c.estimate(msgs, 3000) < 12000 * 0.75:
+                msgs = self._history(len(msgs))
+            res = c.compact(msgs, lambda p: "summary of earlier work " * 10,
+                            extra_tokens=3000)
+            self.assertIsNotNone(res)
+            self.assertLessEqual(res.after, 12000 * c.target_ratio())
+            self.assertFalse(c.needs_compaction(res.messages, 3000))
+            # the latest step is kept whole, and the window never opens on a tool result
+            self.assertEqual(res.messages[-1]["content"], msgs[-1]["content"])
+            first_kept = res.messages.index(next(m for m in res.messages if c.is_summary(m))) + 1
+            self.assertNotEqual(res.messages[first_kept].get("role"), "tool")
+
+    def test_target_below_trigger(self):
+        import compaction as c
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"AGENT_COMPACT_TARGET": "0.9"}):
+            self.assertLess(c.target_ratio(), c.threshold_ratio())

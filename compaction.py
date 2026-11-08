@@ -21,6 +21,7 @@ that call fails a plain summary is built locally, with no model at all.
 Settings (environment):
   AGENT_CONTEXT_TOKENS  the context window to stay within (default 32000)
   AGENT_COMPACT_AT      compact at this share of it (default 0.75)
+  AGENT_COMPACT_TARGET  shrink to this share of it when compacting (default 0.5)
   AGENT_COMPACT_KEEP    recent messages kept as they are (default 8)
 """
 import json
@@ -34,6 +35,7 @@ except Exception:  # pragma: no cover - tiktoken is in requirements
     _ENC = None
 
 SUMMARY_TAG = "[Context compacted]"
+SUMMARY_RESERVE = 900  # room kept for the summary itself (its max_tokens)
 MIN_FOLD_TOKENS = 600  # fold only when the older part is worth a summary call
 
 SUMMARY_PREFACE = (
@@ -79,6 +81,19 @@ def threshold_ratio() -> float:
     except ValueError:
         return 0.75
     return ratio if 0.2 <= ratio <= 0.95 else 0.75
+
+
+def target_ratio() -> float:
+    """Share of the window to shrink to, well under the trigger so a long task
+    doesn't compact again every step (each compaction is a model call)."""
+    trigger = threshold_ratio()
+    try:
+        ratio = float(os.environ.get("AGENT_COMPACT_TARGET", "0.5"))
+    except ValueError:
+        ratio = 0.5
+    if not 0.1 <= ratio < trigger:
+        ratio = min(0.5, trigger * 0.66)
+    return ratio
 
 
 def keep_recent() -> int:
@@ -269,6 +284,18 @@ def compact(messages, summarize, request=None, notes: str = "", extra_tokens: in
     base = 1 if messages[0].get("role") == "system" else 0
     head = messages[:base]
     start = _recent_start(messages, base, keep)
+    # Fold more than the default when the kept window alone would leave the
+    # context near the trigger: aim for target_ratio(), never past the latest step.
+    last_group = len(messages) - 1
+    while last_group > base and messages[last_group].get("role") == "tool":
+        last_group -= 1
+    budget = limit * target_ratio()
+    while (start < last_group
+           and estimate(head + messages[start:], extra_tokens) + SUMMARY_RESERVE > budget):
+        nxt = start + 1
+        while nxt < last_group and messages[nxt].get("role") == "tool":
+            nxt += 1
+        start = nxt
     older = messages[base:start]
     request = request if request is not None else guess_request(messages)
     request_in_older = request is not None and any(m is request for m in older)
