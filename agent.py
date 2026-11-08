@@ -55,6 +55,7 @@ from vision import image_data_uri, strip_old_images
 from approvals import gate as approval_gate, needs_approval
 import agentic
 import worklog
+import compaction
 
 MAX_VERIFY_ROUNDS = 1
 
@@ -217,6 +218,8 @@ class AIAgent:
         self.total_cost_usd = 0.0
         self.tool_call_count = 0
         self.errors = 0
+        self.compactions = 0
+        self._compact_floor = 0
 
         # Persistent memory
         self._memory_text = ""
@@ -558,6 +561,7 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
             "sandbox_packages": len(sandbox_info.get("packages_installed", [])),
             "context_steps": self.context.step_count,
             "context_facts": len(self.context.facts),
+            "compactions": self.compactions,
         }
 
     # ===========================================================
@@ -603,10 +607,76 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
         if self.messages and self.messages[0].get("role") == "system":
             system_msg = self.messages[0]
         recent = self.messages[-(self.max_context_messages - 1):] if system_msg else self.messages[-self.max_context_messages:]
+        # A tool result without the call it answers is rejected by the API: drop leading ones.
+        while recent and recent[0].get("role") == "tool":
+            recent = recent[1:]
         self.messages = []
         if system_msg:
             self.messages.append(system_msg)
         self.messages.extend(recent)
+
+    _TOOL_SCHEMA_TOKENS = None
+
+    def _schema_tokens(self) -> int:
+        if AIAgent._TOOL_SCHEMA_TOKENS is None:
+            AIAgent._TOOL_SCHEMA_TOKENS = compaction.count_text(json.dumps(TOOL_DEFINITIONS))
+        return AIAgent._TOOL_SCHEMA_TOKENS
+
+    def _compaction_notes(self) -> str:
+        lines = []
+        plan = getattr(self, "_public_plan", None)
+        steps = getattr(plan, "steps", None) or []
+        if steps:
+            lines.append("Plan status:")
+            lines += [f"{i}. {s.get('text', '')} [{s.get('status', '')}]" for i, s in enumerate(steps, 1)]
+        evidence = getattr(self, "_turn_evidence", None) or []
+        if evidence:
+            lines.append("Latest tool results:")
+            lines += [f"- {name} [{status}]: {str(out)[:200]}" for name, status, out in evidence[-6:]]
+        return "\n".join(lines)
+
+    def _maybe_compact(self, client, force: bool = False) -> str:
+        """Summarize older turns when the context nears the model's window.
+        Returns a line to show the user, or "" when nothing was compacted."""
+        if len(self.messages) < self._compact_floor:
+            self._compact_floor = 0  # the conversation was cleared
+        if not force:
+            if len(self.messages) < self._compact_floor + 4:
+                return ""
+            if not compaction.needs_compaction(self.messages, self._schema_tokens(),
+                                               max_messages=self.max_context_messages * 2):
+                return ""
+
+        def summarize(prompt):
+            kwargs = dict(model=self.model, messages=prompt, temperature=0.1,
+                          max_tokens=900, stream=False)
+            if self._thinking_body("low"):
+                kwargs["extra_body"] = self._thinking_body("low")
+            resp = completion_with_retry(
+                client, cancelled=lambda: self.cancel_requested,
+                deadline=getattr(self, "_completion_deadline", None), **kwargs)
+            usage = getattr(resp, "usage", None)
+            if usage:
+                self.total_prompt_tokens += usage.prompt_tokens or 0
+                self.total_completion_tokens += usage.completion_tokens or 0
+            return resp.choices[0].message.content or ""
+
+        result = compaction.compact(
+            self.messages, summarize, request=getattr(self, "_request_msg", None),
+            notes=self._compaction_notes(), extra_tokens=self._schema_tokens())
+        if result is None:
+            self._compact_floor = len(self.messages)  # don't retry every step
+            if len(self.messages) > self.max_context_messages * 4:
+                self._trim_conversation_history()  # last resort, as before
+            return ""
+        self.messages = result.messages
+        self.compactions += 1
+        self._compact_floor = len(self.messages)
+        self._log("compaction", before_tokens=result.before, after_tokens=result.after,
+                  folded=result.folded, fallback=result.fallback)
+        how = ", local summary" if result.fallback else ""
+        return (f"\n\n🗜️ Context compacted: {result.before:,} → {result.after:,} tokens "
+                f"({result.folded} older messages summarized{how})\n\n")
 
     # ===========================================================
     # LOGGING
@@ -615,9 +685,10 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
     def _log(self, event: str, **fields):
         if event in {"transient_error", "api_failed", "stream_error", "reasoning_started",
                      "empty_response", "turn_final", "budget_exceeded", "cancelled",
-                     "cancelled_mid_stream", "provider_fallback"}:
+                     "cancelled_mid_stream", "provider_fallback", "compaction"}:
             safe = {key: value for key, value in fields.items()
-                    if key in {"attempt", "delay", "reasoning_seen", "completion_tokens", "elapsed", "status", "provider_index"}
+                    if key in {"attempt", "delay", "reasoning_seen", "completion_tokens", "elapsed", "status", "provider_index",
+                                "before_tokens", "after_tokens", "folded", "fallback"}
                     and isinstance(value, (int, float, bool))}
             if fields.get("error") in {"APIError", "RateLimitError", "InternalServerError", "APITimeoutError", "APIConnectionError", "TimeoutError"}:
                 safe["error_type"] = fields["error"]
@@ -1129,6 +1200,7 @@ RULES
             self.messages[-1] = {"role": "user", "content": augmented_user_message}
 
         # Track the current goal for self-evaluation and task state
+        self._request_msg = self.messages[-1]  # the request, kept word for word by compaction
         self._current_goal = user_message
         self.context.set_goal(user_message[:200])
         if self._plan_steps:
@@ -1176,6 +1248,11 @@ RULES
                 break
 
             self.iteration_count += 1
+
+            _compacted = self._maybe_compact(client)
+            if _compacted:
+                full_response += _compacted
+                yield full_response
 
             # Keep this visible until answer text or tool calls actually arrive.
             thinking_msg = "\n\n⏳ Waiting for the model…\n\n"
@@ -1832,9 +1909,6 @@ RULES
                     full_response = plan_ui.replace(full_response, self._public_plan)
                     yield full_response
                 break
-
-            if len(self.messages) > self.max_context_messages * 2:
-                self._trim_conversation_history()
 
         # Loop exit — store a brief summary, NOT the full response (which can be
         # many KB of tool-call dumps and would balloon the history).

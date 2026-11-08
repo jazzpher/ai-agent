@@ -118,7 +118,7 @@ class RetryTest(unittest.TestCase):
         agent.enable_thinking=False; agent.reasoning_effort='high'; agent.api_key='fake'; agent.model='first'; agent.errors=0; agent.messages=[]; agent.system_prompt='test'
         agent._build_system_prompt=lambda: 'test'
         agent.context=SimpleNamespace(build_context_block=lambda: '', set_goal=lambda g: None)
-        agent._trim_conversation_history=lambda: None; agent._load_memory=lambda: None; agent._should_analyze=lambda *a: False
+        agent._trim_conversation_history=lambda: None; agent._maybe_compact=lambda client: ''; agent._load_memory=lambda: None; agent._should_analyze=lambda *a: False
         agent._log=Mock(); agent._provider_idx=0
         agent._providers=[dict(model='first', base_url='https://example.invalid', api_key='fake'), dict(model='second', base_url='https://example.invalid', api_key='fake')]
         first=Mock(); first.chat.completions.create.side_effect=status(503)
