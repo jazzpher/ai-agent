@@ -1141,6 +1141,7 @@ RULES
         self._files_before = _workspace_snapshot()
         self._step_snap = self._files_before
         _asked = False
+        _denied = False
         _verify_rounds = 0
         _stream_retries = 0
         _empty_retries = 0
@@ -1567,6 +1568,11 @@ RULES
                     self.messages.append({"role": "tool", "tool_call_id": tc["id"],
                                           "content": "Not run: repeated identical call; turn stopped."})
                     continue
+                if _denied:
+                    # The user said no: answer the remaining calls, run nothing, end the turn.
+                    self.messages.append({"role": "tool", "tool_call_id": tc["id"],
+                                          "content": "Not run: the user denied an earlier action in this step; turn stopped."})
+                    continue
                 self.tool_call_count += 1
 
                 t0 = time.time()
@@ -1597,9 +1603,11 @@ RULES
                             else:
                                 result = val
                     else:
+                        _denied = True
                         result = {"status": "blocked", "risk_level": "risky",
-                                  "output": "The user denied (or did not answer) the approval request. "
-                                            "Do not retry this command. Choose a safer approach or ask the user."}
+                                  "output": "The user denied this action (or did not answer). Do not retry it and do not "
+                                            "get the same result another way (no other tool, no workaround). Stop, tell "
+                                            "the user it was not done, and wait for their instructions."}
                 else:
                     result = None
                     for kind, val in self._in_background(
@@ -1692,6 +1700,14 @@ RULES
                     elapsed=round(elapsed, 3),
                     output_len=len(result.get("output", "")) if isinstance(result, dict) else 0,
                 )
+
+            if _denied:
+                # A denial ends the turn so the model cannot route around it with another tool.
+                full_response += "\n🚫 **Tinanggihan mo, kaya tumigil ako.** Walang ginawang ibang paraan. Sabihin mo kung paano itutuloy.\n\n---\n\n"
+                self.messages.append({"role": "assistant", "content": "[The user denied an action. Stopped without doing it another way; waiting for their instructions.]"})
+                self._log("turn_end", reason="denied")
+                yield full_response
+                return
 
             if _asked:
                 full_response += "\n---\n\n"
