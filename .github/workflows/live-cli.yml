@@ -1,3 +1,4 @@
+# rerun: after deny fix (8b465b8)
 name: live-cli (temp, PR 71)
 on:
   push:
