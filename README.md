@@ -67,6 +67,31 @@ python app.py
 
 Mabubuksan ang browser sa **[http://127.0.0.1:7860](http://127.0.0.1:7860/)**
 
+### Option 3: Terminal mode (CLI, parang Claude Code)
+
+Same agent, same tools at approvals, pero sa terminal. Gumagana siya sa folder kung saan mo siya pinatakbo.
+
+```
+cd C:\path\sa\project-mo
+C:\path\sa\ai-agent\cli.bat
+```
+
+O kaya sa naka-activate na venv:
+
+```
+python cli.py                                 # chat sa current folder
+python cli.py -p "ayusin ang failing tests"   # one-shot, sasagot tapos exit
+python cli.py -C ..\project                   # ibang folder
+python cli.py -m <model>                      # ibang model
+python cli.py -y                              # i-approve lahat nang hindi nagtatanong
+```
+
+Bawat command, code o pip install, magtatanong muna: `y` = oo, `N` (o Enter) = hindi, `a` = oo sa lahat ng susunod sa session na ito. Ctrl+C = ihinto yung ginagawa.
+
+Mga command sa loob: `/help`, `/model <name>`, `/models`, `/yes`, `/clear`, `/cwd`, `/exit`.
+
+Kinukuha niya yung provider sa `providers.json` (yung sinave mo sa web UI) o sa `.env`. Yung memory (`MEMORY.md`) nasa `workspace` pa rin ng app, kaya sumusunod siya kahit saang folder ka.
+
 ### I-test ang Safety:
 
 ```
@@ -146,6 +171,8 @@ ai-agent/
 ├── test_safety.py       # Safety test suite
 ├── requirements.txt     # Dependencies
 ├── start.bat            # One-click start
+├── cli.py               # Terminal mode (CLI)
+├── cli.bat              # Terminal mode launcher (Windows)
 ├── install.bat          # One-click install
 ├── README.md            # This file
 └── workspace/           # Sandboxed working directory

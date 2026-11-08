@@ -388,6 +388,11 @@ def main(argv=None) -> int:
         print("no such folder: " + cwd, file=sys.stderr)
         return 2
     prepare_env(cwd)
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # Windows code pages can't print every symbol
+        except (AttributeError, ValueError):
+            pass
 
     instance = build_agent(args.model)
     if not getattr(instance, "api_key", ""):
