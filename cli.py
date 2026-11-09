@@ -22,6 +22,9 @@ import threading
 DEFAULT_APPROVAL_TIMEOUT = "3600"
 
 HELP = (
+    "/save            checkpoint this conversation locally\n"
+    "/sessions        list checkpoints for this workspace\n"
+    "/resume <id>     restore a checkpoint (auto-approve stays off)\n"
     "/plan [task]     inspect and design without writes or commands\n"
     "/approve         approve the displayed plan and enter build mode\n"
     "/diff            review direct file edits in this session\n"
@@ -51,6 +54,8 @@ def parse_args(argv=None):
     p.add_argument("-y", "--yes", action="store_true",
                    help="approve commands without asking")
     p.add_argument("--plan", action="store_true", help="start in enforced read-only planning mode")
+    p.add_argument("--resume", metavar="ID", help="restore a workspace-bound session")
+    p.add_argument("--sessions", action="store_true", help="list saved sessions and exit")
     return p.parse_args(argv)
 
 
@@ -225,13 +230,16 @@ class Renderer:
 
 class Session:
     def __init__(self, agent, renderer: Renderer, auto_yes: bool = False,
-                 stdin=None, out=None):
+                 stdin=None, out=None, store=None):
         self.agent = agent
+        self.store = store
         self.renderer = renderer
         self.auto_yes = bool(auto_yes)
         self.stdin = stdin if stdin is not None else sys.stdin
         self.out = out if out is not None else renderer.stream
         self.style = renderer.style
+        if store is not None:
+            self.agent.checkpoint_callback = lambda: store.save(self.agent)
 
     # ---------- one turn ----------
 
@@ -295,7 +303,16 @@ class Session:
             workflow.pending_plan = getattr(self.agent, "_display_final", None) or ""
         if not cancelled and self.renderer.shown and not self.renderer.shown.endswith("\n"):
             self.out.write("\n")
+        self.checkpoint()
         return last
+
+    def checkpoint(self):
+        if self.store is None:
+            return
+        try:
+            self.store.save(self.agent)
+        except (OSError, ValueError, TypeError) as exc:
+            self.out.write("checkpoint failed: " + str(exc) + "\n")
 
     def ask_approval(self) -> bool:
         self.out.write("\n" + self.style.bold("approve?") + " [y/N/a] ")
@@ -343,7 +360,23 @@ class Session:
         arg = parts[1].strip() if len(parts) > 1 else ""
         if name in ("/exit", "/quit", "/q"):
             return False
-        if name == "/plan":
+        if name == "/save":
+            self.checkpoint()
+            if self.store: self.out.write("session: " + self.agent.session_id + "\n")
+        elif name == "/sessions":
+            for item in self.store.listing() if self.store else []:
+                self.out.write(item['id'] + "  " + str(item['model']) + "\n")
+        elif name == "/resume":
+            if not self.store or not arg:
+                self.out.write("use /resume <session-id>\n")
+            else:
+                try:
+                    self.store.restore(self.agent, arg)
+                    self.auto_yes = False
+                    self.out.write("resumed " + arg + "; auto-approve off\n")
+                except (ValueError, KeyError, TypeError) as exc:
+                    self.out.write("resume failed: " + str(exc) + "\n")
+        elif name == "/plan":
             workflow = getattr(self.agent, "workflow", None)
             if workflow is None:
                 from workflow import Workflow
@@ -396,6 +429,8 @@ class Session:
             self.out.write(os.environ.get("AGENT_WORKSPACE", "") + "\n")
         else:
             self.out.write("unknown command " + name + " - try /help\n")
+        if name in {"/plan", "/clear", "/model"}:
+            self.checkpoint()
         return True
 
 
@@ -429,6 +464,12 @@ def main(argv=None) -> int:
         except (AttributeError, ValueError):
             pass
 
+    from sessions import SessionStore
+    store = SessionStore(cwd)
+    if args.sessions:
+        for item in store.listing():
+            print(item['id'] + "  " + str(item['model']))
+        return 0
     instance = build_agent(args.model)
     if not getattr(instance, "api_key", ""):
         print("no provider configured. Put a key in .env (NVIDIA_API_KEY, GROQ_API_KEY, "
@@ -438,8 +479,14 @@ def main(argv=None) -> int:
 
     from workflow import Workflow
     instance.workflow = Workflow(cwd, "plan" if args.plan else "build")
+    if args.resume:
+        try:
+            store.restore(instance, args.resume)
+        except (ValueError, KeyError, TypeError) as exc:
+            print("resume failed: " + str(exc), file=sys.stderr)
+            return 2
     renderer = Renderer(sys.stdout)
-    session = Session(instance, renderer, auto_yes=args.yes)
+    session = Session(instance, renderer, auto_yes=args.yes and not args.resume, store=store)
     try:
         if args.prompt:
             session.turn(args.prompt)
@@ -452,7 +499,10 @@ def main(argv=None) -> int:
         return session.repl()
     finally:
         try:
-            instance.cleanup_sandbox()
+            session.checkpoint()
+            # Keep offloaded context for resume; only destroy running sandbox.
+            from sandbox import session_manager
+            session_manager.destroy(instance.session_id)
         except Exception:  # noqa: BLE001 - never fail on the way out
             pass
 

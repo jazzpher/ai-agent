@@ -395,3 +395,21 @@ These are cooperative workflow controls, **not an OS security sandbox**. Use
 Docker for untrusted repositories. Direct-edit review excludes binaries and large
 files; request smaller edits. Planning is currently a CLI feature, not a web-UI
 mode. Approving a plan does not prove its implementation or tests are correct.
+
+### Durable CLI sessions
+
+The CLI checkpoints conversations before each tool batch, after every tool receipt
+and at turn boundaries. `python cli.py --sessions` lists workspace-local sessions
+without calling a provider. Resume with `python cli.py --resume ID`, or `/resume ID`
+in chat. `/save` writes a checkpoint explicitly. Restoring never resumes execution
+by itself and turns auto-approval off. Incomplete calls get an explicit unknown
+outcome receipt: inspect current state before retrying, not blind replay. Disk errors
+at a tool boundary stop execution rather than continue without a checkpoint.
+
+JSON checkpoints live in `~/.ai-agent/sessions/`, are atomically replaced and bound
+to the canonical workspace path. They include messages, plan/diff baselines, task
+state and counters, but not provider configuration or automatic consent. Messages
+and file baselines can still contain sensitive material: these local files are not
+encrypted. Offloaded context is retained for resume. Temporary installed packages
+and subprocesses are not restored; reinstall explicitly if needed. Delete unwanted
+checkpoint files and matching `.context/<session>/` data to remove local history.

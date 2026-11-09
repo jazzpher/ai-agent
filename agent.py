@@ -712,6 +712,12 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
     # CLIENT
     # ===========================================================
 
+    def _checkpoint(self):
+        """CLI opts in; persist before execution and after each receipt."""
+        callback = getattr(self, 'checkpoint_callback', None)
+        if callback is not None:
+            callback()
+
     def _thinking_body(self, effort=None):
         if "nemotron" in (self.model or "").lower():
             controls = {"enable_thinking": self.enable_thinking}
@@ -1655,6 +1661,7 @@ RULES
             full_response += f"\n\n🔧 **Action:** {action_summary}\n\n"
             yield full_response
 
+            self._checkpoint()  # persist proposed calls before any side effect
             pending_images = []
             # ---- Execute each tool, render a compact one-line result ----
             for tc, args in zip(tool_calls, args_compact):
@@ -1810,6 +1817,8 @@ RULES
                     elapsed=round(elapsed, 3),
                     output_len=len(result.get("output", "")) if isinstance(result, dict) else 0,
                 )
+
+                self._checkpoint()  # receipt is durable before next action
 
             if _denied:
                 # A denial ends the turn so the model cannot route around it with another tool.
