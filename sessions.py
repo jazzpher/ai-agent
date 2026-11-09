@@ -29,6 +29,7 @@ class SessionStore:
         c = agent.context
         data = dict(version=1, id=agent.session_id, workspace=self.workspace,
                     updated=time.time(), model=agent.model, messages=agent.messages,
+                    checks=getattr(getattr(agent, "checks", None), "receipts", []),
                     metrics={k:getattr(agent,k,0) for k in METRICS},
                     context={k:getattr(c,k) for k in CONTEXT_FIELDS},
                     workflow=({'mode':w.mode, 'approved_plan':w.approved_plan,
@@ -127,12 +128,25 @@ class SessionStore:
                 expected = type(getattr(c,k))
                 if type(ctx_data[k]) is not expected: raise ValueError('Invalid context field '+k)
                 setattr(c,k,ctx_data[k])
+        from verification import Checks
+        checks = Checks(self.workspace)
+        receipts = data.get('checks', [])
+        if not isinstance(receipts, list) or len(receipts) > 20:
+            raise ValueError('Invalid check receipts')
+        for r in receipts:
+            if (not isinstance(r, dict) or not isinstance(r.get('command'), str)
+                    or type(r.get('passed')) is not bool
+                    or not (r.get('returncode') is None or type(r.get('returncode')) is int)
+                    or not (r.get('fingerprint') is None or isinstance(r.get('fingerprint'), str))):
+                raise ValueError('Invalid check receipt')
+        checks.receipts = receipts
         # Validate fully before changing the current agent.
         if data.get('model'): agent.use_model(data['model'])
         agent.session_id = sid
         agent.messages = messages
         agent.context = c
         agent.workflow = w
+        agent.checks = checks
         agent._compact_floor = 0
         agent.cancel_requested = False
         for k,v in metrics.items():

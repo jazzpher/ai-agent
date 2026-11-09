@@ -1189,6 +1189,8 @@ RULES
 
         if getattr(self, "workflow", None) is not None:
             self.system_prompt += self.workflow.instruction()
+            from verification import project_guidance
+            self.system_prompt += project_guidance(self.workflow.root)
             self.messages[0]["content"] = self.system_prompt
 
         # Inject dynamic context block into system message
