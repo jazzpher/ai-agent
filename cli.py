@@ -28,6 +28,8 @@ HELP = (
     "/plan [task]     inspect and design without writes or commands\n"
     "/approve         approve the displayed plan and enter build mode\n"
     "/diff            review direct file edits in this session\n"
+    "/check <cmd>     run an explicit acceptance check with approval\n"
+    "/checks          show check receipts and freshness\n"
     "/status          show mode and session status\n"
     "/help            show this help\n"
     "/model <name>    switch model (keeps the provider that owns it)\n"
@@ -399,6 +401,28 @@ class Session:
         elif name == "/diff":
             workflow = getattr(self.agent, "workflow", None)
             self.out.write((workflow.diff() if workflow else "No workflow edits tracked.") + "\n")
+        elif name == "/checks":
+            checks = getattr(self.agent, "checks", None)
+            self.out.write((checks.report() if checks else "No explicit verification checks recorded.") + "\n")
+        elif name == "/check":
+            workflow = getattr(self.agent, "workflow", None)
+            if workflow is not None and workflow.mode == "plan":
+                self.out.write("Read-only plan mode: approve the plan before executing checks.\n")
+            elif not arg:
+                self.out.write("use /check <command>\n")
+            else:
+                from verification import Checks
+                checks = getattr(self.agent, "checks", None)
+                if checks is None:
+                    self.agent.checks = checks = Checks(os.environ["AGENT_WORKSPACE"])
+                self.out.write("verification command: " + arg + "\n")
+                if self.auto_yes or self.ask_approval():
+                    result = self.agent._execute_tool("run_bash", {"command": arg, "timeout": 120})
+                    checks.record(arg, result)
+                    self.out.write(str(result.get("output", "")) + "\n" + checks.report() + "\n")
+                    self.checkpoint()
+                else:
+                    self.out.write("Check denied; nothing executed.\n")
         elif name == "/status":
             workflow = getattr(self.agent, "workflow", None)
             self.out.write("mode: " + (workflow.mode if workflow else "legacy") +
