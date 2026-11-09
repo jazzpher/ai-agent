@@ -25,6 +25,21 @@ from typing import Optional
 from config import WORKSPACE_DIR, SANDBOX_DIR, SANDBOX_TIMEOUT, CORE_PACKAGES
 
 
+def _container_user_args() -> list:
+    """Run the container as the host user so the mounted workspace is readable.
+
+    Root inside a --cap-drop ALL container has no CAP_DAC_OVERRIDE, so it can't
+    read a host folder owned by another uid (seen in Codespaces: ls: .: Permission
+    denied), and checks then fail even when the code is right. HOME points at the
+    writable tmpfs. Windows has no getuid; Docker Desktop maps ownership there.
+    """
+    getuid = getattr(os, "getuid", None)
+    getgid = getattr(os, "getgid", None)
+    if getuid is None or getgid is None:
+        return []
+    return ["--user", f"{getuid()}:{getgid()}", "-e", "HOME=/tmp"]
+
+
 _IMPORT_NAMES = {
     "pillow": "PIL", "python-docx": "docx", "python-pptx": "pptx",
     "openpyxl": "openpyxl", "pypdf2": "PyPDF2", "pdfplumber": "pdfplumber",
@@ -159,6 +174,7 @@ class SessionSandbox:
                     "--pids-limit", "256",
                     "--security-opt", "no-new-privileges:true",
                     "--cap-drop", "ALL",
+                    *_container_user_args(),
                     "--name", self._container_name,
                     "python:3.12-alpine",
                     "sleep", str(SANDBOX_TIMEOUT),
