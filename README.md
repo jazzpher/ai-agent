@@ -376,3 +376,22 @@ Isolated Bash/Python commands do not ask for approval in `auto` approval mode. P
 Render: use Settings > Build > Source > Edit, select this repository and `main`, choose Docker and deploy. Keep the instance on Free. No Docker daemon or privileged container is required. Rollback to the former Python runtime must restore its Python build/start commands and keeps approval prompts; do not describe venv mode as isolation.
 
 Render Docker blocks bubblewrap mounts (`Failed to make / slave: Permission denied`). On that runtime the runner instead uses Landlock ABI 3+ with seccomp: read/execute access only to runtime paths; read/write access only to workspace, session install directory when approved, and a private temporary directory. File truncation is covered. Seccomp denies network sockets for ordinary commands, host signals/ptrace and namespace operations. It is access restriction, not a separate filesystem or PID view: directory names can remain visible, but forbidden file contents and writes are denied. Descendants cannot detach and are killed with the command group. No host fallback is allowed when neither kernel backend works.
+
+### Plan → approve → implement → review (CLI)
+
+Start `python cli.py --plan` in your project, then describe the task. Plan mode is
+**enforced at tool dispatch**, not just a model instruction: file writes, arbitrary
+commands, code execution, installs and delegation are blocked even with `--yes`.
+The agent can inspect text files and propose a design with affected files and
+acceptance checks. `/approve` requires a completed plan and enters build mode.
+
+In build mode each direct `write_file`/`edit_file` proposal shows a unified diff
+before consent. Denying an action stops the turn. `/diff` reviews tracked direct
+edits relative to their first proposal; shell changes still require `git diff`.
+`/status` shows the mode and auto-approval state. `/plan <task>` returns to planning.
+`--yes` deliberately bypasses build-mode consent, but never the plan-mode gate.
+
+These are cooperative workflow controls, **not an OS security sandbox**. Use
+Docker for untrusted repositories. Direct-edit review excludes binaries and large
+files; request smaller edits. Planning is currently a CLI feature, not a web-UI
+mode. Approving a plan does not prove its implementation or tests are correct.

@@ -22,6 +22,10 @@ import threading
 DEFAULT_APPROVAL_TIMEOUT = "3600"
 
 HELP = (
+    "/plan [task]     inspect and design without writes or commands\n"
+    "/approve         approve the displayed plan and enter build mode\n"
+    "/diff            review direct file edits in this session\n"
+    "/status          show mode and session status\n"
     "/help            show this help\n"
     "/model <name>    switch model (keeps the provider that owns it)\n"
     "/models          list the configured models\n"
@@ -46,6 +50,7 @@ def parse_args(argv=None):
     p.add_argument("-m", "--model", help="model to use for this session")
     p.add_argument("-y", "--yes", action="store_true",
                    help="approve commands without asking")
+    p.add_argument("--plan", action="store_true", help="start in enforced read-only planning mode")
     return p.parse_args(argv)
 
 
@@ -285,6 +290,9 @@ class Session:
             self.out.write("\n" + self.style.dim("cancelled") + "\n")
         finally:
             worker.join(timeout=5)
+        workflow = getattr(self.agent, "workflow", None)
+        if workflow is not None and workflow.mode == "plan" and not cancelled:
+            workflow.pending_plan = getattr(self.agent, "_display_final", None) or ""
         if not cancelled and self.renderer.shown and not self.renderer.shown.endswith("\n"):
             self.out.write("\n")
         return last
@@ -335,7 +343,34 @@ class Session:
         arg = parts[1].strip() if len(parts) > 1 else ""
         if name in ("/exit", "/quit", "/q"):
             return False
-        if name == "/help":
+        if name == "/plan":
+            workflow = getattr(self.agent, "workflow", None)
+            if workflow is None:
+                from workflow import Workflow
+                self.agent.workflow = workflow = Workflow(os.environ["AGENT_WORKSPACE"])
+            workflow.mode = "plan"
+            workflow.pending_plan = ""
+            workflow.approved_plan = ""
+            self.out.write("plan mode: read-only; commands, writes and delegation blocked\n")
+            if arg:
+                self.turn(arg)
+        elif name == "/approve":
+            workflow = getattr(self.agent, "workflow", None)
+            if workflow is None or workflow.mode != "plan" or not workflow.pending_plan.strip():
+                self.out.write("no completed plan to approve. Use /plan <task> first.\n")
+            else:
+                workflow.approved_plan = workflow.pending_plan
+                workflow.mode = "build"
+                self.out.write("plan approved; build mode. Edits and commands still require consent.\n")
+                self.turn("Implement the approved plan. Verify with actual checks and report remaining limits.")
+        elif name == "/diff":
+            workflow = getattr(self.agent, "workflow", None)
+            self.out.write((workflow.diff() if workflow else "No workflow edits tracked.") + "\n")
+        elif name == "/status":
+            workflow = getattr(self.agent, "workflow", None)
+            self.out.write("mode: " + (workflow.mode if workflow else "legacy") +
+                           "; auto-approve: " + ("on" if self.auto_yes else "off") + "\n")
+        elif name == "/help":
             self.out.write(HELP)
         elif name == "/model":
             if not arg:
@@ -401,6 +436,8 @@ def main(argv=None) -> int:
               file=sys.stderr)
         return 2
 
+    from workflow import Workflow
+    instance.workflow = Workflow(cwd, "plan" if args.plan else "build")
     renderer = Renderer(sys.stdout)
     session = Session(instance, renderer, auto_yes=args.yes)
     try:
