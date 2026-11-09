@@ -203,6 +203,7 @@ class AIAgent:
         self._providers: list = []
         self._provider_idx = 0
         self.vision = False  # set per provider; text-only models never get images
+        self.workflow = None  # CLI opts in; web UI compatibility is preserved
         self.messages: list = []
         self.iteration_count = 0
         self.reasoning_effort = "high"
@@ -726,6 +727,16 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
         return make_client(self.base_url, self.api_key)
 
     def _approval_prompt(self, tool_name: str, args: dict):
+        workflow = getattr(self, "workflow", None)
+        if workflow is not None:
+            if workflow.block(tool_name):
+                return None  # dispatch rejects it without an approval request
+            if tool_name in {"write_file", "edit_file"}:
+                try:
+                    diff = workflow.preview(tool_name, args)
+                except (OSError, ValueError, UnicodeError) as exc:
+                    return f"Cannot preview edit: {exc}", "workflow"
+                return "Proposed edit (review before approving):\n" + diff, "workflow"
         """Text to show the user when this call needs approval, else None."""
         try:
             if tool_name == "run_bash":
@@ -777,6 +788,16 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
     def _execute_tool(self, tool_name: str, arguments: dict) -> dict:
         arguments = dict(arguments)
         arguments.pop("plan_step", None)
+        workflow = getattr(self, "workflow", None)
+        if workflow is not None:
+            refusal = workflow.block(tool_name)
+            if refusal:
+                return refusal
+            if tool_name in {"write_file", "edit_file"}:
+                try:
+                    workflow.preview(tool_name, arguments)
+                except (OSError, ValueError, UnicodeError) as exc:
+                    return {"status": "blocked", "output": f"Cannot safely preview edit: {exc}"}
         if tool_name == "update_plan":
             plan = getattr(self, "_public_plan", plan_ui.Plan())
             step = arguments.get("step")
@@ -801,7 +822,15 @@ If something is genuinely impossible (e.g., you can't access the internet, or a 
             from workers import run_workers
             sid = self.session_id
             def _exec(name, args):
-                return TOOL_FUNCTIONS[name](**dict(args, session_id=sid))
+                # Worker tools must pass the same policy and approval gates as the parent.
+                refusal = workflow.block(name) if workflow is not None else None
+                if refusal:
+                    return refusal
+                prompt = self._approval_prompt(name, args)
+                if prompt:
+                    if not approval_gate.request(sid, prompt[0], cancelled=lambda: self.cancel_requested):
+                        return {"status": "blocked", "output": "User denied this worker action. Stop; no workaround."}
+                return self._execute_tool(name, args)
             self._log("delegate_tasks", count=len(arguments.get("tasks") or []))
             return run_workers(arguments.get("tasks"), self._get_client(), self.model, TOOL_DEFINITIONS,
                                _exec, cancelled=lambda: self.cancel_requested)
@@ -1151,6 +1180,10 @@ RULES
         self._load_memory()
         self.system_prompt = self._build_system_prompt()
         self.messages[0]["content"] = self.system_prompt
+
+        if getattr(self, "workflow", None) is not None:
+            self.system_prompt += self.workflow.instruction()
+            self.messages[0]["content"] = self.system_prompt
 
         # Inject dynamic context block into system message
         context_block = self.context.build_context_block()
