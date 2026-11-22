@@ -331,7 +331,7 @@ footer {display:none !important;}
 .act-dots i {width:7px; height:7px; border-radius:50%; background:var(--ws-accent); animation:act-bounce 1.1s ease-in-out infinite;}
 .act-dots i:nth-child(2) {animation-delay:.15s;} .act-dots i:nth-child(3) {animation-delay:.3s;}
 .act-phase {font-weight:600;} .act-time {font-variant-numeric:tabular-nums; color:var(--ws-muted);}
-.act-note {color:var(--ws-muted); margin-left:auto;} .act-lost {flex-basis:100%; color:var(--ws-warning-ink); opacity:0; max-height:0; overflow:hidden; animation:act-lost-show 8s linear 1 forwards;}
+.act-note {color:var(--ws-muted); margin-left:auto;} .act-lost {flex-basis:100%; color:var(--ws-warning-ink); opacity:0; max-height:0; overflow:hidden; animation:act-lost-show 250s linear 1 forwards;} /* 250s > 240s model timeout: a silent-but-healthy call must never trip the watchdog */
 .activity-bar.slow {background:var(--ws-warning-bg); border-color:var(--ws-warning-line);}
 @keyframes act-bounce {0%,80%,100% {transform:translateY(0); opacity:.35;} 40% {transform:translateY(-4px); opacity:1;}}
 @keyframes act-watchdog {0%,70% {background:var(--ws-soft);} 100% {background:var(--ws-warning-bg); border-color:var(--ws-warning-line);}}

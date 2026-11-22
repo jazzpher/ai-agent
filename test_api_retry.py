@@ -14,6 +14,19 @@ def status(code):
     return APIStatusError('synthetic failure', response=response, body=None)
 
 
+class ClientErrorTest(unittest.TestCase):
+    def test_4xx_except_429_counts_as_client_error(self):
+        for code in (400, 401, 403, 404, 422):
+            self.assertTrue(api_retry.is_client_error(status(code)), code)
+
+    def test_429_5xx_and_plain_errors_are_not_client_errors(self):
+        from openai import APIError
+        self.assertFalse(api_retry.is_client_error(status(429)))
+        self.assertFalse(api_retry.is_client_error(status(500)))
+        self.assertFalse(api_retry.is_client_error(
+            APIError('boom', httpx.Request('POST', 'https://example.invalid'), body=None)))
+
+
 class RetryTest(unittest.TestCase):
     def setUp(self):
         self.now = 0.0
@@ -109,7 +122,8 @@ class RetryTest(unittest.TestCase):
         module = ast.Module(body=[ast.ClassDef(name='AIAgent', bases=[], keywords=[], body=selected, decorator_list=[])], type_ignores=[])
         scope = dict(plan_ui=__import__("plan_ui"), re=__import__("re"), thinking=__import__("thinking"), time=api_retry.time, MAX_TOTAL_SECONDS=120, MAX_ITERATIONS=2, REPEAT_CALL_LIMIT=5, DEFAULT_TEMPERATURE=0.3,
                      DEFAULT_MAX_TOKENS=8192, TOOL_DEFINITIONS=[], _model_supports_reasoning=lambda m: False,
-                     completion_with_retry=api_retry.completion_with_retry, is_transient=api_retry.is_transient, public_error=api_retry.public_error,
+                     completion_with_retry=api_retry.completion_with_retry, is_transient=api_retry.is_transient,
+                     is_client_error=api_retry.is_client_error, public_error=api_retry.public_error,
                      CompletionCancelled=api_retry.CompletionCancelled,
                      _workspace_snapshot=lambda: {}, _changed_files=lambda before: [],
                      with_status=__import__("response_status").with_status)

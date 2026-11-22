@@ -331,7 +331,7 @@ def refresh_panels(agent):
     return files, status
 
 
-EXTRA_MODELS = ["deepseek-ai/deepseek-v4.1-flash"]  # free NVIDIA endpoint, tested in chat
+EXTRA_MODELS = []  # free NVIDIA extras not in providers.json; deepseek-v4.1-flash removed (EOL on NVIDIA 2026-11-16)
 
 
 def model_choices():
@@ -634,7 +634,8 @@ def activity_phase(text):
 def activity_html(agent):
     """Always-visible busy bar. Pure CSS animation; each poll re-renders it, which
     restarts the watchdog animation. If polls stop (server asleep / connection lost)
-    the bar flips itself to 'no signal' after a few seconds with no JavaScript."""
+    the bar flips itself to 'no signal' with no JavaScript - but only after ~4 minutes,
+    longer than the 240s model timeout, so a silent but healthy call never trips it."""
     import html as _html
     if not getattr(agent, "_ui_running", False):
         return gr.update(value="", visible=False)
@@ -782,6 +783,24 @@ def build_providers_panel():
             outs += [key, hint]
         save_btn.click(_save, ins, outs + [status], show_progress="full")
 
+        def _reload_provider_fields():
+            """Re-read saved providers so a browser reload shows them, not the build-time values."""
+            saved = load_providers()
+            saved += [{"preset": "Custom", "base_url": "", "model": "", "api_key": "",
+                       "enabled": False, "vision": False}] * (MAX_SLOTS - len(saved))
+            updates = []
+            for s in saved[:MAX_SLOTS]:
+                updates += [gr.update(value=s["preset"]), gr.update(value=s["base_url"]),
+                            gr.update(value=s["model"]), gr.update(value=""),
+                            f"Key: {mask_key(s['api_key'])}",
+                            gr.update(value=s["enabled"]), gr.update(value=s.get("vision", False))]
+            return updates
+
+        reload_outputs = []
+        for preset, base, model, key, hint, on, vision, *_ in slots:
+            reload_outputs += [preset, base, model, key, hint, on, vision]
+        return _reload_provider_fields, reload_outputs
+
 
 def build_app():
     theme = workspace_theme()
@@ -843,7 +862,7 @@ def build_app():
                                 "Changes apply to your next message.")
                     thinking_checkbox = gr.Checkbox(value=False, label="Enable Nemotron thinking",
                         info="Slower, more considered answers. Off by default. Reasoning text stays private.")
-                    build_providers_panel()
+                    provider_reload_fn, provider_reload_outputs = build_providers_panel()
             with gr.Tab("Session", id="session"):
                 with gr.Column(elem_id="session-panel"):
                     gr.Markdown("## Behind this conversation\nUsage, tools and sandbox details for this session.")
@@ -941,6 +960,16 @@ def build_app():
         open_timer.tick(auto_open_files, inputs=[agent_state], outputs=sheet_outputs,
                         queue=False, show_progress="hidden")
         app.load(load_files_only, inputs=None, outputs=[files_box])
+        # Browser reload rebuilds the UI from build-time values; re-read the saved
+        # provider settings and model list so they survive a reload.
+        app.load(provider_reload_fn, inputs=None, outputs=provider_reload_outputs,
+                 queue=False, show_progress="hidden")
+
+        def _reload_model_picker():
+            choices = model_choices()
+            return gr.update(choices=choices, value=(choices or [(None, None)])[0][1])
+        app.load(_reload_model_picker, inputs=None, outputs=[model_dd],
+                 queue=False, show_progress="hidden")
         artifact_pick.input(open_artifact, inputs=[artifact_pick],
                             outputs=[artifact_viewer, artifact_title, artifact_body, artifact_download], queue=False)
         artifact_close.click(lambda: gr.update(visible=False), outputs=[artifact_viewer], queue=False)

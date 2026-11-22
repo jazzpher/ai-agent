@@ -29,7 +29,7 @@ from response_status import with_status
 HEARTBEAT_SECONDS = 8.0  # keep the stream alive during slow sandbox/tool work
 
 import research_guard
-from api_retry import make_client, completion_with_retry, is_transient, CompletionCancelled, public_error
+from api_retry import make_client, completion_with_retry, is_transient, is_client_error, CompletionCancelled, public_error
 
 from config import (
     NVIDIA_API_KEY,
@@ -1375,7 +1375,7 @@ RULES
                     return
                 except Exception as e:
                     self.errors += 1
-                    if (is_transient(e) and time.monotonic() < self._completion_deadline
+                    if ((is_transient(e) or is_client_error(e)) and time.monotonic() < self._completion_deadline
                             and self._switch_provider()):
                         full_response += f"\n\n🔁 Switching to fallback model `{self.model}`…"
                         yield full_response
@@ -1484,7 +1484,7 @@ RULES
                     yield full_response
                     self.iteration_count -= 1
                     continue
-                if (_silent and is_transient(e) and not self.cancel_requested
+                if (_silent and (is_transient(e) or is_client_error(e)) and not self.cancel_requested
                         and time.monotonic() < self._completion_deadline
                         and self._switch_provider()):
                     # This step produced no public answer or tool calls. Keep all

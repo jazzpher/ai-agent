@@ -5,6 +5,7 @@ import agent as agent_mod
 import api_retry
 from test_agent_loop import FakeClient, make_agent, run
 from test_response_status import chunk
+from test_api_retry import status
 
 
 def exhausted():
@@ -76,6 +77,52 @@ def test_all_providers_exhausted_readable_not_raw_exception():
     out = run(a)
     assert 'limit' in out.lower()
     assert 'Resource exhausted' not in out
+
+
+def test_404_at_request_creation_falls_back_without_replaying():
+    # A decommissioned/unknown model id must switch providers, not just error out.
+    first = FakeClient([])
+    first.chat.completions.create = Mock(side_effect=status(404))
+    second = FakeClient([('text', 'recovered')])
+    a = setup_agent(first, second)
+    out = run(a)
+    assert 'recovered' in out
+    assert a.provider_name == 'Second'
+    assert first.chat.completions.create.call_count == 1  # 4xx is not retried on the same provider
+    assert 'fallback' in out
+
+
+def test_silent_midstream_404_falls_back():
+    first = FakeClient([])
+    def broken(**kw):
+        def stream():
+            raise status(404)
+            yield
+        return stream()
+    first.chat.completions.create = Mock(side_effect=broken)
+    second = FakeClient([('text', 'recovered')])
+    a = setup_agent(first, second)
+    out = run(a)
+    assert 'recovered' in out
+    assert a.provider_name == 'Second'
+    assert 'fallback' in out
+
+
+def test_partial_output_never_replayed_on_404():
+    first = FakeClient([])
+    def broken(**kw):
+        def stream():
+            yield chunk(content='partial output')
+            raise status(404)
+        return stream()
+    first.chat.completions.create = Mock(side_effect=broken)
+    second = FakeClient([('text', 'must not run')])
+    a = setup_agent(first, second)
+    out = run(a)
+    assert 'partial output' in out
+    assert first.chat.completions.create.call_count == 1
+    assert not second.calls
+    assert 'Stream error' in out
 
 
 def test_real_openai_sse_error_routes_by_body_code():
