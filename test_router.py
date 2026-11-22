@@ -26,6 +26,7 @@ class SizeTest(unittest.TestCase):
         self.assertEqual(router.model_size_b(""), router.DEFAULT_SIZE)
         self.assertLess(router.model_size_b("gemini-2.0-flash-lite"), router.model_size_b("gemini-2.5-flash"))
         self.assertLess(router.model_size_b("gemma-3-27b-it"), 30)
+        self.assertEqual(router.model_size_b("moonshotai/kimi-k3.1-pro"), 2800)
 
     def test_rank_biggest_first_and_stable(self):
         ranked = router.rank_providers([SM, GM, GR, NV])

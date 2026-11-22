@@ -70,14 +70,22 @@ class ModelPickerTest(unittest.TestCase):
     def test_choices_and_override_survive_refresh(self):
         import app
         from agent import AIAgent
-        ids = [v for _, v in app.model_choices()]
-        self.assertIn("deepseek-ai/deepseek-v4.1-flash", ids)
+        from unittest.mock import patch
+        with patch.object(app, "EXTRA_MODELS", ["example-extra/flash-test"]):
+            ids = [v for _, v in app.model_choices()]
+            self.assertIn("example-extra/flash-test", ids)
         a = AIAgent(api_key="k")
-        app.set_model_choice("deepseek-ai/deepseek-v4.1-flash", a)
+        app.set_model_choice("example-extra/flash-test", a)
         a.model = "other"; app.apply_model_choice(a)
-        self.assertEqual(a.model, "deepseek-ai/deepseek-v4.1-flash")
+        self.assertEqual(a.model, "example-extra/flash-test")
         app.set_model_choice("", a); a.model = "x"; app.apply_model_choice(a)
         self.assertEqual(a.model, "x")
+
+    def test_eol_deepseek_not_offered(self):
+        # deepseek-ai/deepseek-v4.1-flash went EOL on NVIDIA 2026-11-16; it must not come back.
+        import app
+        ids = [v for _, v in app.model_choices()]
+        self.assertNotIn("deepseek-ai/deepseek-v4.1-flash", ids)
 
 
 if __name__ == "__main__":

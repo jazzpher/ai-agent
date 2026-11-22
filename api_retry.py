@@ -56,6 +56,14 @@ def public_error(error, *, partial=False):
     return text
 
 
+def is_client_error(error):
+    """HTTP 4xx from the provider (except 429, owned by is_transient): a bad or
+    decommissioned model id, auth failure, quota sent as 400. Replaying the same
+    provider is pointless, but another provider may still answer."""
+    return (isinstance(error, APIStatusError) and error.status_code != 429
+            and 400 <= error.status_code < 500)
+
+
 def is_transient(error):
     # Some providers send an SSE error with only a message (no HTTP status).
     # Never retry authentication/permission/validation failures based on wording.

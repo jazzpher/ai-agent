@@ -14,6 +14,7 @@ _HINTS = [
     (r"gemini.*flash-lite", 30),
     (r"gemini.*flash", 100),
     (r"deepseek.*(v3|v4|r1)", 600),
+    (r"kimi.?k3", 2800),  # Kimi K3.1 Pro: 2.8T total / 104B active (HF + NVIDIA NIM model cards)
     (r"kimi.?k2", 1000),
     (r"qwen3.*coder", 480),
     (r"llama.*405", 405),

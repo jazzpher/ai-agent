@@ -525,7 +525,7 @@ def main(argv=None) -> int:
         try:
             session.checkpoint()
             # Keep offloaded context for resume; only destroy running sandbox.
-            from sandbox import session_manager
+            from sandbox_session import session_manager
             session_manager.destroy(instance.session_id)
         except Exception:  # noqa: BLE001 - never fail on the way out
             pass
